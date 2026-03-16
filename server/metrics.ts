@@ -55,6 +55,8 @@ export function computeAgentMetrics(store: Store, wallet: string) {
   const interactions = store.listInteractionsByWallet(wallet);
   const settlements = interactions.map((i) => store.getSettlement(i.id));
   const evidenceCounts = interactions.map((i) => store.getEvidence(i.id).length);
+  const receiptCounts = interactions.map((i) => store.listReceiptsByInteraction(i.id).length);
+  const attestationCount = new Set(store.listAttestationsByWallet(wallet).map((row) => row.id)).size;
 
   const createdAtSorted = interactions.map((i) => i.created_at).sort();
   const firstSeen = createdAtSorted[0];
@@ -87,8 +89,9 @@ export function computeAgentMetrics(store: Store, wallet: string) {
 
   const settlementStats = settlementSuccessRate(settlements);
 
-  const evidenceDensity =
-    evidenceCounts.length > 0 ? evidenceCounts.reduce((sum, v) => sum + v, 0) / evidenceCounts.length : 0;
+  const evidenceTotal =
+    evidenceCounts.reduce((sum, v) => sum + v, 0) + receiptCounts.reduce((sum, v) => sum + v, 0) + attestationCount;
+  const evidenceDensity = interactions.length > 0 ? evidenceTotal / interactions.length : 0;
 
   return {
     wallet,

@@ -329,7 +329,9 @@ export class Store {
 
   listAttestationsByWallet(wallet: string) {
     const rows = this.db
-      .prepare("select * from attestations where attester = ? or recipient = ? order by created_at desc")
+      .prepare(
+        "select * from attestations where lower(attester) = lower(?) or lower(recipient) = lower(?) order by created_at desc",
+      )
       .all(wallet, wallet) as Array<AttestationRecord & { raw: string }>;
     return rows.map((row) => ({
       id: row.id,
@@ -337,6 +339,22 @@ export class Store {
       recipient: row.recipient ?? undefined,
       schema_id: row.schema_id ?? undefined,
       tx_hash: row.tx_hash ?? undefined,
+      chain_id: row.chain_id ?? undefined,
+      raw: JSON.parse(row.raw),
+      created_at: row.created_at,
+    }));
+  }
+
+  listAttestationsByTxHash(txHash: string) {
+    const rows = this.db
+      .prepare("select * from attestations where lower(tx_hash) = lower(?) order by created_at desc")
+      .all(txHash) as Array<AttestationRecord & { raw: string }>;
+    return rows.map((row) => ({
+      id: row.id,
+      attester: row.attester ?? undefined,
+      recipient: row.recipient ?? undefined,
+      schema_id: row.schema_id ?? undefined,
+      tx_hash: row.tx_hash,
       chain_id: row.chain_id ?? undefined,
       raw: JSON.parse(row.raw),
       created_at: row.created_at,

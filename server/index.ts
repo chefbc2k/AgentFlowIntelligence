@@ -62,7 +62,12 @@ export function createApi({ config, store }: { config: AppConfig; store: Store }
       const settlement = store.getSettlement(id);
       const walletSnapshot = store.getWalletSnapshot(id);
       const receipts = store.listReceiptsByInteraction(id);
-      return ok({ interaction, evidence, settlement, walletSnapshot, receipts });
+      const attestationRows = [
+        ...(interaction.wallet_address ? store.listAttestationsByWallet(interaction.wallet_address) : []),
+        ...(settlement?.tx_hash ? store.listAttestationsByTxHash(settlement.tx_hash) : []),
+      ];
+      const attestations = Array.from(new Map(attestationRows.map((row) => [row.id, row])).values());
+      return ok({ interaction, evidence, settlement, walletSnapshot, receipts, attestations });
     },
     ingestX402: async (body: Record<string, unknown> | undefined) => {
       const headers = extractX402Headers((body?.headers ?? {}) as Record<string, string>);

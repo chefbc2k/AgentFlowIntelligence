@@ -145,6 +145,8 @@ describe("store", () => {
     expect(store.listBaseTransactionsByWallet("0xwallet")).toHaveLength(2);
     expect(store.listTokenTransfersByWallet("0xwallet")).toHaveLength(1);
     expect(store.listAttestationsByWallet("0xwallet")).toHaveLength(1);
+    expect(store.listAttestationsByWallet("0xWALLET")).toHaveLength(1);
+    expect(store.listAttestationsByTxHash("0xTX")).toHaveLength(1);
     expect(store.listReceiptsByInteraction("i1")).toHaveLength(1);
 
     // Cover the "approvals_required: false" write path as well.
@@ -283,6 +285,16 @@ describe("store", () => {
         raw: {},
         created_at: "2024-01-01T00:00:00Z",
       },
+      {
+        id: "att-null3",
+        attester: undefined,
+        recipient: undefined,
+        schema_id: undefined,
+        tx_hash: "0xTX-NULL",
+        chain_id: undefined,
+        raw: {},
+        created_at: "2024-01-01T00:00:00Z",
+      },
     ]);
 
     store.upsertReceipts([
@@ -342,6 +354,13 @@ describe("store", () => {
     expect(attNull?.tx_hash).toBeUndefined();
     expect(attNull?.chain_id).toBeUndefined();
     expect(attNull2?.attester).toBeUndefined();
+
+    const attestationsByTx = store.listAttestationsByTxHash("0xtx-null");
+    const attNull3 = attestationsByTx.find((row) => row.id === "att-null3");
+    expect(attNull3?.attester).toBeUndefined();
+    expect(attNull3?.recipient).toBeUndefined();
+    expect(attNull3?.schema_id).toBeUndefined();
+    expect(attNull3?.chain_id).toBeUndefined();
 
     const receipts = store.listReceiptsByInteraction("i-null");
     expect(receipts[0]?.tx_hash).toBeUndefined();

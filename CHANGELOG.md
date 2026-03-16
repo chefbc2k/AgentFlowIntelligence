@@ -28,6 +28,7 @@ Rules:
 - Improved x402 ingestion to infer settlement tx hashes from `PAYMENT-RESPONSE` when `txHash` is omitted, enabling Base enrichment + evidence packets without manual duplication.
 - Added regression tests covering tx hash inference and settlement status derivation while keeping 100% coverage thresholds.
 - Revalidated with `npm run validate` (lint + typecheck + server/UI coverage) passing cleanly.
+- Correlated stored EAS attestations onto interaction packets (case-insensitive wallet/tx matching) and included receipts/attestations in agent evidence density.
 
 ## 2026-03-15
 

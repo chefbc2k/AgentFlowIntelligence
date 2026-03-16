@@ -249,6 +249,46 @@ describe("server api logic", () => {
     expect((detail.body as { settlement: { status: string } }).settlement.status).toBe("confirmed");
   });
 
+  it("correlates stored attestations onto interaction packets (case-insensitive)", async () => {
+    stubFetchForHappyPath();
+    const store = createTestStore();
+    const api = createApi({
+      config: {
+        port: "0",
+        dbPath: ":memory:",
+        dataDir: "/tmp",
+        locusBaseUrl: "https://beta-api.paywithlocus.com",
+        easBaseUrl: "https://base.easscan.org/graphql",
+        easSepoliaUrl: "https://base-sepolia.easscan.org/graphql",
+      },
+      store,
+    });
+
+    const ingest = await api.ingestX402({
+      headers: {},
+      txHash: "0xtx",
+      walletAddress: "0xWALLET",
+    });
+    const interactionId = (ingest.body as { interactionId: string }).interactionId;
+
+    store.upsertAttestations([
+      {
+        id: "att-1",
+        attester: "0xwallet",
+        recipient: "0xsvc",
+        schema_id: "schema",
+        tx_hash: "0xTX",
+        chain_id: 8453,
+        raw: { ok: true },
+        created_at: "2024-01-01T00:00:00Z",
+      },
+    ]);
+
+    const detail = api.getInteraction(interactionId);
+    const attestations = (detail.body as { attestations: Array<{ id: string }> }).attestations;
+    expect(attestations.filter((row) => row.id === "att-1")).toHaveLength(1);
+  });
+
   it("infers txHash from payment-response header during x402 ingestion", async () => {
     stubFetchForHappyPath();
     const store = createTestStore();
