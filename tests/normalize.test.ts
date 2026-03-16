@@ -48,6 +48,45 @@ describe("normalizeInteraction", () => {
     expect(peac?.payload.decoded).toBeNull();
   });
 
+  it("infers tx hash from payment response when txHash is omitted", () => {
+    const bundle = normalizeInteraction({
+      paymentHeaders: {
+        paymentRequired: "{\"amount\":\"1\"}",
+        paymentResponse: "{\"transaction\":{\"hash\":\"0xtx\"}}",
+      },
+    });
+
+    expect(bundle.settlement.tx_hash).toBe("0xtx");
+    expect(bundle.settlement.status).toBe("pending");
+    expect(bundle.evidence.some((row) => row.kind === "base")).toBe(true);
+  });
+
+  it("ignores nested transaction hashes that are not strings", () => {
+    const bundle = normalizeInteraction({
+      paymentHeaders: {
+        paymentRequired: "{\"amount\":\"1\"}",
+        paymentResponse: "{\"transaction\":{\"hash\":123}}",
+      },
+    });
+
+    expect(bundle.settlement.tx_hash).toBeUndefined();
+    expect(bundle.settlement.status).toBe("unknown");
+    expect(bundle.evidence.some((row) => row.kind === "base")).toBe(false);
+  });
+
+  it("marks settlement as failed when payment response reports success=false", () => {
+    const bundle = normalizeInteraction({
+      paymentHeaders: {
+        paymentRequired: "{\"amount\":\"1\"}",
+        paymentResponse: "{\"success\":false}",
+      },
+    });
+
+    expect(bundle.settlement.status).toBe("failed");
+    expect(bundle.settlement.tx_hash).toBeUndefined();
+    expect(bundle.evidence.some((row) => row.kind === "base")).toBe(false);
+  });
+
   it("handles missing optional inputs and raw PEAC receipts", () => {
     const bundle = normalizeInteraction({
       paymentHeaders: {

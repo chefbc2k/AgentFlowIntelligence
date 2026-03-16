@@ -82,6 +82,7 @@ export function createApi({ config, store }: { config: AppConfig; store: Store }
         locusMetadata: locusMetadata as Record<string, unknown> | undefined,
         walletSnapshot: walletSnapshotInput,
       });
+      const bundleTxHash = bundle.settlement.tx_hash;
 
       store.upsertInteraction(bundle.interaction);
       store.upsertSettlement(bundle.settlement);
@@ -102,16 +103,16 @@ export function createApi({ config, store }: { config: AppConfig; store: Store }
           {
             id: peac.id,
             interaction_id: bundle.interaction.id,
-            tx_hash: typeof txHash === "string" ? txHash : undefined,
+            tx_hash: bundleTxHash,
             raw: { status: peac.status, decoded: peac.decoded ?? null, raw: peac.raw },
             created_at: new Date().toISOString(),
           },
         ]);
       }
 
-      if (typeof txHash === "string" && txHash) {
+      if (bundleTxHash) {
         try {
-          const baseTx = await fetchBaseTx(txHash, { etherscanApiKey: config.etherscanApiKey });
+          const baseTx = await fetchBaseTx(bundleTxHash, { etherscanApiKey: config.etherscanApiKey });
           store.upsertBaseTransaction({
             tx_hash: baseTx.txHash,
             status: baseTx.status,
@@ -138,7 +139,7 @@ export function createApi({ config, store }: { config: AppConfig; store: Store }
           ]);
         } catch (error) {
           // Observability-only failure: ingestion succeeds even if enrichment fails.
-          console.warn("base_enrichment_failed", { txHash, error });
+          console.warn("base_enrichment_failed", { txHash: bundleTxHash, error });
         }
       }
 

@@ -249,6 +249,36 @@ describe("server api logic", () => {
     expect((detail.body as { settlement: { status: string } }).settlement.status).toBe("confirmed");
   });
 
+  it("infers txHash from payment-response header during x402 ingestion", async () => {
+    stubFetchForHappyPath();
+    const store = createTestStore();
+    const api = createApi({
+      config: {
+        port: "0",
+        dbPath: ":memory:",
+        dataDir: "/tmp",
+        locusBaseUrl: "https://beta-api.paywithlocus.com",
+        easBaseUrl: "https://base.easscan.org/graphql",
+        easSepoliaUrl: "https://base-sepolia.easscan.org/graphql",
+      },
+      store,
+    });
+
+    const ingest = await api.ingestX402({
+      headers: { "payment-response": "{\"transaction\":\"0xtx\"}" },
+    });
+    const interactionId = (ingest.body as { interactionId: string }).interactionId;
+
+    const detail = api.getInteraction(interactionId);
+    expect(detail.status).toBe(200);
+    expect((detail.body as { settlement: { status: string; tx_hash?: string } }).settlement).toEqual(
+      expect.objectContaining({ status: "confirmed", tx_hash: "0xtx" }),
+    );
+    expect(
+      (detail.body as { evidence: Array<{ kind: string }> }).evidence.some((row) => row.kind === "base_tx"),
+    ).toBe(true);
+  });
+
   it("sanitizes non-string ids and retains string metadata fields", async () => {
     stubFetchForHappyPath();
     const store = createTestStore();

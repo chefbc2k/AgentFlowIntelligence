@@ -23,17 +23,42 @@ export interface NormalizedBundle {
   evidence: EvidenceRecord[];
 }
 
+function extractSettlementTxHash(paymentResponse?: Record<string, unknown>): string | undefined {
+  if (!paymentResponse) return undefined;
+
+  const candidates = ["transaction", "txHash", "tx", "hash"] as const;
+  for (const key of candidates) {
+    const value = paymentResponse[key];
+    if (typeof value === "string") return value;
+    if (value && typeof value === "object") {
+      const nested = value as Record<string, unknown>;
+      if (typeof nested.hash === "string") return nested.hash;
+    }
+  }
+
+  return undefined;
+}
+
+function extractSettlementSuccess(paymentResponse?: Record<string, unknown>): boolean | undefined {
+  if (!paymentResponse) return undefined;
+  const value = paymentResponse.success;
+  return typeof value === "boolean" ? value : undefined;
+}
+
 export function normalizeInteraction(input: NormalizeInput): NormalizedBundle {
   const createdAt = new Date().toISOString();
   const paymentRequired = parseJsonHeader(input.paymentHeaders.paymentRequired);
   const paymentSignature = parseJsonHeader(input.paymentHeaders.paymentSignature);
   const paymentResponse = parseJsonHeader(input.paymentHeaders.paymentResponse);
   const peacReceipt = parsePeacReceipt(input.paymentHeaders.peacReceipt);
+  const inferredTxHash = extractSettlementTxHash(paymentResponse);
+  const txHash = input.txHash ?? inferredTxHash;
+  const settlementSuccess = extractSettlementSuccess(paymentResponse);
   const interactionId = interactionIdFromParts([
     input.paymentHeaders.paymentRequired ?? "",
     input.paymentHeaders.paymentSignature ?? "",
     input.paymentHeaders.paymentResponse ?? "",
-    input.txHash ?? "",
+    txHash ?? "",
   ]);
 
   const interaction: InteractionRecord = {
@@ -47,16 +72,19 @@ export function normalizeInteraction(input: NormalizeInput): NormalizedBundle {
       paymentRequired,
       paymentSignature,
       paymentResponse,
-      txHash: input.txHash,
+      txHash,
     },
   };
+
+  const settlementStatus: SettlementRecord["status"] =
+    settlementSuccess === false ? "failed" : txHash ? "pending" : "unknown";
 
   const settlement: SettlementRecord = {
     id: `${interactionId}:settlement`,
     interaction_id: interactionId,
-    tx_hash: input.txHash,
+    tx_hash: txHash,
     chain_id: 8453,
-    status: input.txHash ? "pending" : "unknown",
+    status: settlementStatus,
     metadata: {
       locus: input.locusMetadata ?? null,
     },
@@ -86,13 +114,13 @@ export function normalizeInteraction(input: NormalizeInput): NormalizedBundle {
     });
   }
 
-  if (input.txHash) {
+  if (txHash) {
     evidence.push({
       id: `${interactionId}:tx`,
       interaction_id: interactionId,
       kind: "base",
       created_at: createdAt,
-      payload: { txHash: input.txHash },
+      payload: { txHash },
     });
   }
 
