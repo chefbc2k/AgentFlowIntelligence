@@ -1,0 +1,11 @@
+{
+  "headers": {
+    "payment-required": "{\"amount\":\"1\",\"asset\":\"USDC\"}",
+    "payment-signature": "{\"sig\":\"0xabc\"}",
+    "payment-response": "{\"tx\":\"0xdef\"}"
+  },
+  "txHash": "0xdef",
+  "agentId": "afi-agent",
+  "walletAddress": "0xabc",
+  "counterparty": "service-x"
+}

@@ -1,0 +1,17 @@
+_archive/
+data/
+node_modules/
+dist/
+coverage/
+vite.config.ts.timestamp-*
+*.log
+.env
+.env.local
+.env.*.local
+out/
+cache/
+broadcast/
+.env
+.env.local
+.env.*.local
+.DS_Store

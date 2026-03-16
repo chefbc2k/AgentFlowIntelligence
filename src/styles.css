@@ -1,0 +1,233 @@
+@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;600&display=swap");
+
+:root {
+  color-scheme: light;
+  --bg: #0b0f1a;
+  --card: #111827;
+  --card-2: #0f172a;
+  --accent: #22d3ee;
+  --accent-2: #f97316;
+  --text: #e2e8f0;
+  --muted: #94a3b8;
+  --stroke: #1f2937;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Space Grotesk", sans-serif;
+  background: radial-gradient(circle at top, #111827, #05070e 60%);
+  color: var(--text);
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.afi-root {
+  padding: 32px;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.afi-hero {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 24px;
+  margin-bottom: 24px;
+  padding: 24px;
+  background: linear-gradient(135deg, rgba(34, 211, 238, 0.15), rgba(249, 115, 22, 0.1));
+  border: 1px solid var(--stroke);
+  border-radius: 16px;
+}
+
+.afi-hero h1 {
+  margin: 0 0 8px;
+  font-size: 28px;
+}
+
+.afi-hero p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.afi-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.afi-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+.afi-panel {
+  background: var(--card);
+  border: 1px solid var(--stroke);
+  border-radius: 16px;
+  padding: 20px;
+}
+
+.afi-panel h2 {
+  margin-top: 0;
+}
+
+.afi-form {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.afi-form input {
+  flex: 1;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--stroke);
+  background: var(--card-2);
+  color: var(--text);
+}
+
+.afi-form button {
+  border-radius: 10px;
+  border: none;
+  padding: 10px 14px;
+  background: var(--accent);
+  color: #061019;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.afi-muted {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.afi-metrics {
+  display: grid;
+  gap: 8px;
+}
+
+.afi-metrics div {
+  display: flex;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--stroke);
+  padding-bottom: 6px;
+}
+
+.afi-flow {
+  display: grid;
+  gap: 12px;
+}
+
+.afi-edge {
+  display: grid;
+  grid-template-columns: 1fr 2fr auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.afi-edge-label {
+  display: flex;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.afi-edge-bar {
+  height: 8px;
+  background: #0f172a;
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.afi-edge-bar div {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+}
+
+.afi-edge-count {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12px;
+}
+
+.afi-wide {
+  margin-top: 16px;
+}
+
+.afi-evidence-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: 1fr 1fr;
+}
+
+.afi-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.afi-list li {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  gap: 8px;
+  align-items: center;
+  background: var(--card-2);
+  padding: 8px 10px;
+  border-radius: 10px;
+}
+
+.afi-list button {
+  border: none;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #061019;
+  font-weight: 700;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.afi-packet {
+  display: grid;
+  gap: 12px;
+}
+
+.afi-packet pre {
+  background: #05070e;
+  color: #d1fae5;
+  padding: 12px;
+  border-radius: 12px;
+  max-height: 360px;
+  overflow: auto;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12px;
+}
+
+.afi-packet-meta {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+}
+
+.afi-packet-meta span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+@media (max-width: 900px) {
+  .afi-evidence-grid {
+    grid-template-columns: 1fr;
+  }
+  .afi-hero {
+    flex-direction: column;
+  }
+}
