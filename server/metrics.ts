@@ -6,8 +6,7 @@ function toDateBucket(iso: string) {
 }
 
 function coefficientOfVariation(values: number[]) {
-  if (values.length === 0) return 0;
-  const mean = values.reduce((sum, v) => sum + v, 0) / values.length;
+  const mean = values.length === 0 ? 0 : values.reduce((sum, v) => sum + v, 0) / values.length;
   if (mean === 0) return 0;
   const variance = values.reduce((sum, v) => sum + (v - mean) ** 2, 0) / values.length;
   return Math.sqrt(variance) / mean;

@@ -5,7 +5,7 @@ export interface BaseTxResult {
   from?: string;
   to?: string;
   value?: string;
-  raw?: Record<string, unknown>;
+  raw: Record<string, unknown>;
 }
 
 export async function fetchBaseTxFromEtherscan(apiKey: string, txHash: string): Promise<BaseTxResult> {
@@ -23,7 +23,7 @@ export async function fetchBaseTxFromEtherscan(apiKey: string, txHash: string): 
   const payload = await response.json();
   const result = payload?.result as { hash?: string; blockNumber?: string; from?: string; to?: string; value?: string } | null;
   if (!result?.hash) {
-    return { txHash, status: "unknown", raw: payload };
+    return { txHash, status: "unknown", raw: payload as Record<string, unknown> };
   }
   return {
     txHash,
@@ -32,7 +32,7 @@ export async function fetchBaseTxFromEtherscan(apiKey: string, txHash: string): 
     from: result.from,
     to: result.to,
     value: result.value,
-    raw: payload,
+    raw: payload as Record<string, unknown>,
   };
 }
 
@@ -48,7 +48,7 @@ export async function fetchBaseTxFromBlockscout(txHash: string): Promise<BaseTxR
   const payload = await response.json();
   const result = payload?.result as { hash?: string; blockNumber?: string; from?: string; to?: string; value?: string } | null;
   if (!result?.hash) {
-    return { txHash, status: "unknown", raw: payload };
+    return { txHash, status: "unknown", raw: payload as Record<string, unknown> };
   }
   return {
     txHash,
@@ -57,7 +57,7 @@ export async function fetchBaseTxFromBlockscout(txHash: string): Promise<BaseTxR
     from: result.from,
     to: result.to,
     value: result.value,
-    raw: payload,
+    raw: payload as Record<string, unknown>,
   };
 }
 

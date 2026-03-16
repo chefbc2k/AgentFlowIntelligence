@@ -13,7 +13,11 @@ export interface CapturedX402 {
 
 export async function fetchWithX402Capture(url: string, options?: RequestInit): Promise<{ response: Response; capture: CapturedX402 }> {
   const response = await fetch(url, options);
-  const headers = extractX402Headers(Object.fromEntries(response.headers.entries()));
+  const rawHeaders: Record<string, string> = {};
+  response.headers.forEach((value, key) => {
+    rawHeaders[key] = value;
+  });
+  const headers = extractX402Headers(rawHeaders);
   return {
     response,
     capture: {

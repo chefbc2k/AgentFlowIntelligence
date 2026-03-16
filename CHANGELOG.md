@@ -19,6 +19,12 @@ Rules:
 - Started dev servers and verified UI renders with an empty state.
 - Registered the AFI agent on Synthesis and stored credentials locally (secrets kept out of this log).
 - Implemented full AFI adapters (Locus, Base, EAS, PEAC), expanded evidence schema, added metrics endpoints, and rebuilt the UI with agent/counterparty/flow views.
+- Refactored server runtime to separate testable API logic from the network listener (`server/index.ts` + `server/cli.ts`) and added end-to-end handler tests.
+- Fixed `POST /api/locus/ingest/transactions` foreign-key failures by ensuring an interaction exists before inserting wallet snapshots.
+- Tightened typing + runtime validation (React JSX TS config, Zod-validated Locus balance responses, and safer header iteration for x402 client).
+- Added repo-wide quality gates: ESLint + TypeScript `typecheck` + Vitest coverage thresholds enforcing 100% lines/statements/functions/branches for both server + UI.
+- Expanded regression coverage across store normalization, adapters, metrics, and UI flows (interaction list, packet viewer, metrics loaders, and main entry mount).
+- Validated locally with `npm run validate` (lint + typecheck + coverage) passing cleanly.
 
 ## 2026-03-15
 

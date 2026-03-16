@@ -18,6 +18,15 @@ const locusTxSchema = z.array(
   }),
 );
 
+const locusBalanceSchema = z
+  .object({
+    balance: z.string().optional(),
+    allowance: z.string().optional(),
+    maxTx: z.string().optional(),
+    approvalsRequired: z.boolean().optional(),
+  })
+  .passthrough();
+
 export interface LocusClientConfig {
   baseUrl: string;
   apiKey: string;
@@ -63,7 +72,7 @@ export class LocusClient {
   }
 
   async getBalance() {
-    return this.getJson("/api/pay/balance");
+    return locusBalanceSchema.parse(await this.getJson("/api/pay/balance"));
   }
 
   async sendPayment(payload: Record<string, unknown>) {

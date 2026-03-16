@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractX402Headers, interactionIdFromParts } from "../server/x402";
+import { extractX402Headers, interactionIdFromParts, parseJsonHeader } from "../server/x402";
 
 describe("x402 headers", () => {
   it("extracts payment headers case-insensitively", () => {
@@ -14,6 +14,17 @@ describe("x402 headers", () => {
     expect(parsed.paymentSignature).toContain("sig");
     expect(parsed.paymentResponse).toContain("tx");
     expect(parsed.peacReceipt).toContain("receipt");
+  });
+
+  it("joins multi-valued headers", () => {
+    const parsed = extractX402Headers({ "payment-required": ["a", "b"] });
+    expect(parsed.paymentRequired).toBe("a,b");
+  });
+
+  it("parses JSON header bodies", () => {
+    expect(parseJsonHeader()).toBeUndefined();
+    expect(parseJsonHeader("{\"ok\":true}")?.ok).toBe(true);
+    expect(parseJsonHeader("{not-json}")).toBeUndefined();
   });
 
   it("produces stable interaction ids", () => {

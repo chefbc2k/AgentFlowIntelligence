@@ -1,11 +1,186 @@
-import { render, screen } from "@testing-library/react";
-import { describe, it, expect } from "vitest";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import React from "react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../../src/app";
 
+type FetchResponse = { json: () => Promise<unknown> };
+
+function jsonResponse(payload: unknown): FetchResponse {
+  return { json: () => Promise.resolve(payload) };
+}
+
 describe("AFI UI", () => {
+  const fetchMock = global.fetch as unknown as ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock.mockReset();
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
   it("renders the header", () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse([]));
     render(<App />);
     expect(screen.getByText(/Agent Flow Intelligence/i)).toBeInTheDocument();
+  });
+
+  it("loads interactions, renders flow edges, and shows packet details", async () => {
+    const repeatedEdge = Array.from({ length: 11 }, (_, idx) => ({
+      id: `i-${idx}`,
+      created_at: "2024-01-01T00:00:00Z",
+      wallet_address: "0xwallet",
+      counterparty: "svc",
+      protocol: "x402",
+    }));
+    const interactions = [
+      ...repeatedEdge,
+      {
+        id: "i-unknown",
+        created_at: "2024-01-02T00:00:00Z",
+        wallet_address: undefined,
+        counterparty: undefined,
+        protocol: "locus",
+      },
+    ];
+
+    const detail = {
+      interaction: interactions[0],
+      evidence: [{ id: "e1", kind: "x402", payload: { ok: true }, created_at: "2024-01-01T00:00:00Z" }],
+      settlement: { id: "s1", status: "confirmed", tx_hash: "0xtx" },
+      walletSnapshot: { wallet_address: "0xwallet", approvals_required: true },
+      receipts: [{ id: "r1", raw: { ok: true }, created_at: "2024-01-01T00:00:00Z" }],
+    };
+
+    fetchMock.mockResolvedValueOnce(jsonResponse(interactions));
+    fetchMock.mockResolvedValueOnce(jsonResponse(detail));
+
+    render(<App />);
+
+    expect(await screen.findByText("11")).toBeInTheDocument();
+    expect(screen.getByText("1")).toBeInTheDocument();
+
+    const bars = Array.from(document.querySelectorAll(".afi-edge-bar > div"));
+    expect(bars[0]).toHaveStyle({ width: "100%" });
+    expect(bars[1]).toHaveStyle({ width: "10%" });
+
+    const interactionsList = screen.getByRole("list");
+    within(interactionsList).getAllByRole("button", { name: "View" })[0]?.click();
+
+    expect(await screen.findByText(detail.interaction.id)).toBeInTheDocument();
+    expect(screen.getByText("confirmed")).toBeInTheDocument();
+    expect(screen.getByText("Download JSON")).toHaveAttribute("download", `afi-${detail.interaction.id}.json`);
+  });
+
+  it("loads agent + counterparty metrics and supports early-return when inputs are empty", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse([]));
+    render(<App />);
+
+    const agentSection = screen.getByRole("heading", { name: "Agent Profile" }).closest("section")!;
+    const counterpartySection = screen.getByRole("heading", { name: "Counterparty Profile" }).closest("section")!;
+
+    fetchMock.mockClear();
+    within(agentSection).getByRole("button", { name: "Load" }).click();
+    within(counterpartySection).getByRole("button", { name: "Load" }).click();
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    const agentMetrics = {
+      wallet: "0xwallet",
+      lifecycle: { firstSeen: undefined, lastSeen: "2024-01-03T00:00:00Z", ageDays: 1.25 },
+      throughput: { totalInteractions: 12, dailyCounts: [12], burstiness: 0.1234 },
+      counterparty: { unique: 2, top: { id: "svc", share: 0.9 }, repeatRate: 0.5 },
+      paymentBehavior: { count: 1, avg: 2, min: 2, max: 2, median: 2 },
+      settlement: { total: 2, successRate: 0.75 },
+      evidenceDensity: 3.25,
+    };
+
+    const counterpartyMetrics = {
+      counterparty: "svc",
+      volume: { totalInteractions: 4, uniqueWallets: 2 },
+      paymentBehavior: { count: 2, avg: 1.234, min: 1, max: 2, median: 1.5 },
+      fulfillment: { total: 4, successRate: 0.5 },
+    };
+
+    fetchMock.mockResolvedValueOnce(jsonResponse(agentMetrics));
+    fetchMock.mockResolvedValueOnce(jsonResponse(counterpartyMetrics));
+
+    fireEvent.change(within(agentSection).getByPlaceholderText("Wallet address (Base)"), {
+      target: { value: "0xwallet" },
+    });
+    within(agentSection).getByRole("button", { name: "Load" }).click();
+
+    fireEvent.change(within(counterpartySection).getByPlaceholderText("Counterparty ID / service"), {
+      target: { value: "svc" },
+    });
+    within(counterpartySection).getByRole("button", { name: "Load" }).click();
+
+    expect(await screen.findByText("75%")).toBeInTheDocument();
+    expect(await screen.findByText("50%")).toBeInTheDocument();
+    expect(screen.getAllByText("—").length).toBeGreaterThan(0);
+
+    fetchMock.mockRejectedValueOnce(new Error("counterparty"));
+    within(counterpartySection).getByRole("button", { name: "Load" }).click();
+    expect(await screen.findByText(/Track inbound flows/i)).toBeInTheDocument();
+  });
+
+  it("covers metrics render branches + failure fallbacks", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse([]));
+
+    const { unmount } = render(<App />);
+
+    const agentSection = screen.getByRole("heading", { name: "Agent Profile" }).closest("section")!;
+
+    const agentMetrics = {
+      wallet: "0xwallet",
+      lifecycle: { firstSeen: "2024-01-01T00:00:00Z", lastSeen: undefined, ageDays: 0 },
+      throughput: { totalInteractions: 0, dailyCounts: [], burstiness: 0 },
+      counterparty: { unique: 0, top: null, repeatRate: 0 },
+      paymentBehavior: { count: 0, avg: 0, min: 0, max: 0, median: 0 },
+      settlement: { total: 0, successRate: 0 },
+      evidenceDensity: 0,
+    };
+
+    fetchMock.mockResolvedValueOnce(jsonResponse(agentMetrics));
+    fireEvent.change(within(agentSection).getByPlaceholderText("Wallet address (Base)"), {
+      target: { value: "0xwallet" },
+    });
+    within(agentSection).getByRole("button", { name: "Load" }).click();
+
+    expect(await screen.findByText("2024-01-01T00:00:00Z")).toBeInTheDocument();
+    expect(screen.getAllByText("—").length).toBeGreaterThan(0);
+
+    fetchMock.mockRejectedValueOnce(new Error("agent"));
+    within(agentSection).getByRole("button", { name: "Load" }).click();
+    expect(await screen.findByText(/Enter a wallet/i)).toBeInTheDocument();
+
+    unmount();
+  });
+
+  it("covers interaction/detail fetch failures and the packet status fallback", async () => {
+    fetchMock.mockRejectedValueOnce(new Error("network"));
+    const first = render(<App />);
+    expect(await screen.findByText("No interactions yet.")).toBeInTheDocument();
+    first.unmount();
+
+    fetchMock.mockReset();
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse([{ id: "i1", created_at: "2024-01-01T00:00:00Z", protocol: "x402" }]),
+    );
+    const noSettlementDetail: { interaction: { id: string }; settlement?: undefined } = { interaction: { id: "i1" } };
+    fetchMock.mockResolvedValueOnce(jsonResponse(noSettlementDetail));
+    fetchMock.mockRejectedValueOnce(new Error("detail"));
+
+    render(<App />);
+    const interactionsList = await screen.findByRole("list");
+    const viewButton = within(interactionsList).getByRole("button", { name: "View" });
+
+    viewButton.click();
+    expect(await screen.findByText("Download JSON")).toBeInTheDocument();
+    const statusLabel = screen.getByText("Status");
+    expect(statusLabel.parentElement?.querySelector("strong")).toHaveTextContent("unknown");
+
+    viewButton.click();
+    expect(await screen.findByText(/Select an interaction/i)).toBeInTheDocument();
   });
 });
