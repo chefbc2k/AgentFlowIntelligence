@@ -29,6 +29,8 @@ Rules:
 - Added regression tests covering tx hash inference and settlement status derivation while keeping 100% coverage thresholds.
 - Revalidated with `npm run validate` (lint + typecheck + server/UI coverage) passing cleanly.
 - Correlated stored EAS attestations onto interaction packets (case-insensitive wallet/tx matching) and included receipts/attestations in agent evidence density.
+- Fixed local validation reliability under constrained/offline environments by (1) running Vitest with a repo-local temp dir to avoid macOS `/var/folders` ENOSPC failures and (2) swapping the SQLite backend to Node’s built-in `node:sqlite` to avoid native module ABI rebuild requirements.
+- Added regression coverage for SQLite transaction rollback and for nullish Locus transaction upserts; revalidated `npm run validate` with 100% lines/statements/functions/branches for server + UI.
 
 ## 2026-03-15
 

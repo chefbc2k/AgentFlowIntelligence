@@ -9,6 +9,14 @@ export default tseslint.config(
     ignores: ["coverage/**", "dist/**", "node_modules/**"],
   },
   js.configs.recommended,
+  {
+    files: ["scripts/**/*.{js,mjs,cjs}"],
+    languageOptions: {
+      globals: {
+        ...globals.node,
+      },
+    },
+  },
   ...tseslint.configs.recommended,
   {
     files: ["**/*.{ts,tsx}"],
@@ -34,4 +42,3 @@ export default tseslint.config(
     },
   },
 );
-

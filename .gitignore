@@ -5,6 +5,7 @@ dist/
 coverage/
 vite.config.ts.timestamp-*
 *.log
+.afi-tmp/
 .env
 .env.local
 .env.*.local

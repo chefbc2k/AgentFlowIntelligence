@@ -206,6 +206,20 @@ describe("store", () => {
       created_at: "2024-01-02T00:00:00Z",
     });
 
+    store.upsertLocusTransactions([
+      {
+        id: "lt-null",
+        interaction_id: undefined,
+        tx_hash: undefined,
+        status: undefined,
+        counterparty: undefined,
+        amount: undefined,
+        currency: undefined,
+        created_at: undefined,
+        raw: {},
+      },
+    ]);
+
     store.upsertBaseTransaction({
       tx_hash: "0xbase-null",
       status: "unknown",

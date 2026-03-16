@@ -1,5 +1,5 @@
-import Database from "better-sqlite3";
 import fs from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 
 export interface DatabaseConfig {
   dbPath: string;
@@ -11,7 +11,22 @@ export function openDatabase(config: DatabaseConfig) {
     fs.mkdirSync(config.dataDir, { recursive: true });
   }
 
-  const db = new Database(config.dbPath);
+  const db = new DatabaseSync(config.dbPath);
+  db.exec("pragma foreign_keys = on;");
+
+  const transaction = <Args extends unknown[], Result>(fn: (...args: Args) => Result) => {
+    return (...args: Args) => {
+      db.exec("begin");
+      try {
+        const result = fn(...args);
+        db.exec("commit");
+        return result;
+      } catch (error) {
+        db.exec("rollback");
+        throw error;
+      }
+    };
+  };
 
   db.exec(`
     create table if not exists interactions (
@@ -103,5 +118,9 @@ export function openDatabase(config: DatabaseConfig) {
     );
   `);
 
-  return db;
+  return {
+    exec: db.exec.bind(db),
+    prepare: db.prepare.bind(db),
+    transaction,
+  };
 }
