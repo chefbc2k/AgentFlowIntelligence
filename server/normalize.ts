@@ -1,5 +1,6 @@
 import { interactionIdFromParts, parseJsonHeader } from "./x402";
 import { parsePeacReceipt } from "./peac";
+import { deriveControls } from "./controls";
 import type { EvidenceRecord, InteractionRecord, SettlementRecord, WalletSnapshotRecord } from "./types";
 
 export interface NormalizeInput {
@@ -75,6 +76,8 @@ export function normalizeInteraction(input: NormalizeInput): NormalizedBundle {
       txHash,
     },
   };
+
+  interaction.summary.controls = deriveControls(interaction, input.walletSnapshot);
 
   const settlementStatus: SettlementRecord["status"] =
     settlementSuccess === false ? "failed" : txHash ? "pending" : "unknown";
@@ -187,6 +190,8 @@ export function normalizeLocusInteraction(input: NormalizeLocusInput): Normalize
       txHash: input.txHash,
     },
   };
+
+  interaction.summary.controls = deriveControls(interaction, input.walletSnapshot);
 
   const settlement: SettlementRecord = {
     id: `${interactionId}:settlement`,

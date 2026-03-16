@@ -11,6 +11,14 @@ type InteractionRow = {
 
 type InteractionDetail = {
   interaction: InteractionRow;
+  controls?: {
+    amount: number | null;
+    currency: string | null;
+    approvalRequired: boolean | null;
+    withinAllowance: boolean | null;
+    withinMaxTx: boolean | null;
+    source: string;
+  };
   evidence: Array<{ id: string; kind: string; payload: unknown; created_at: string }>;
   settlement: { id: string; status: string; tx_hash?: string };
   walletSnapshot?: {
@@ -31,6 +39,14 @@ type AgentMetrics = {
   counterparty: { unique: number; top: { id: string; share: number } | null; repeatRate: number };
   paymentBehavior: { count: number; avg: number; min: number; max: number; median: number };
   settlement: { total: number; successRate: number };
+  settlementLatency: { total: number; avgSeconds: number; minSeconds: number; maxSeconds: number; medianSeconds: number };
+  controls: {
+    approvals: { total: number; required: number; rate: number };
+    allowance: { total: number; compliant: number; overLimit: number; rate: number };
+    maxTx: { total: number; compliant: number; overLimit: number; rate: number };
+    overall: { total: number; compliant: number; rate: number };
+  };
+  receiptAvailability: { total: number; withReceipt: number; rate: number };
   evidenceDensity: number;
 };
 
@@ -39,6 +55,14 @@ type CounterpartyMetrics = {
   volume: { totalInteractions: number; uniqueWallets: number };
   paymentBehavior: { count: number; avg: number; min: number; max: number; median: number };
   fulfillment: { total: number; successRate: number };
+  settlementLatency: { total: number; avgSeconds: number; minSeconds: number; maxSeconds: number; medianSeconds: number };
+  controls: {
+    approvals: { total: number; required: number; rate: number };
+    allowance: { total: number; compliant: number; overLimit: number; rate: number };
+    maxTx: { total: number; compliant: number; overLimit: number; rate: number };
+    overall: { total: number; compliant: number; rate: number };
+  };
+  receiptAvailability: { total: number; withReceipt: number; rate: number };
 };
 
 export function App() {
@@ -92,6 +116,13 @@ export function App() {
       return { from, to, count };
     });
   }, [interactions]);
+
+  const formatControlStatus = (controls?: InteractionDetail["controls"]) => {
+    if (!controls) return "—";
+    if (controls.withinAllowance === null && controls.withinMaxTx === null) return "—";
+    if (controls.withinAllowance === false || controls.withinMaxTx === false) return "over-limit";
+    return "within-limits";
+  };
 
   return (
     <div className="afi-root">
@@ -147,6 +178,22 @@ export function App() {
                 <strong>{(agentMetrics.settlement.successRate * 100).toFixed(0)}%</strong>
               </div>
               <div>
+                <span>Approval rate</span>
+                <strong>{(agentMetrics.controls.approvals.rate * 100).toFixed(0)}%</strong>
+              </div>
+              <div>
+                <span>Limit compliance</span>
+                <strong>{(agentMetrics.controls.overall.rate * 100).toFixed(0)}%</strong>
+              </div>
+              <div>
+                <span>Receipt rate</span>
+                <strong>{(agentMetrics.receiptAvailability.rate * 100).toFixed(0)}%</strong>
+              </div>
+              <div>
+                <span>Latency (avg s)</span>
+                <strong>{agentMetrics.settlementLatency.avgSeconds.toFixed(1)}</strong>
+              </div>
+              <div>
                 <span>Evidence density</span>
                 <strong>{agentMetrics.evidenceDensity.toFixed(1)}</strong>
               </div>
@@ -182,6 +229,14 @@ export function App() {
               <div>
                 <span>Success rate</span>
                 <strong>{(counterpartyMetrics.fulfillment.successRate * 100).toFixed(0)}%</strong>
+              </div>
+              <div>
+                <span>Limit compliance</span>
+                <strong>{(counterpartyMetrics.controls.overall.rate * 100).toFixed(0)}%</strong>
+              </div>
+              <div>
+                <span>Receipt rate</span>
+                <strong>{(counterpartyMetrics.receiptAvailability.rate * 100).toFixed(0)}%</strong>
               </div>
             </div>
           )}
@@ -238,6 +293,18 @@ export function App() {
                   <div>
                     <span>Status</span>
                     <strong>{selected.settlement?.status ?? "unknown"}</strong>
+                  </div>
+                  <div>
+                    <span>Amount</span>
+                    <strong>
+                      {selected.controls?.amount === null || selected.controls?.amount === undefined
+                        ? "—"
+                        : `${selected.controls.amount}${selected.controls.currency ? ` ${selected.controls.currency}` : ""}`}
+                    </strong>
+                  </div>
+                  <div>
+                    <span>Controls</span>
+                    <strong>{formatControlStatus(selected.controls)}</strong>
                   </div>
                 </div>
                 <pre>{JSON.stringify(selected, null, 2)}</pre>

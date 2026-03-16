@@ -9,6 +9,7 @@ import { fetchBaseTokenTransfers, fetchBaseTx, fetchBaseTxHistory } from "./base
 import { computeAgentMetrics, computeCounterpartyMetrics } from "./metrics";
 import { fetchEasAttestations } from "./eas";
 import { parsePeacReceipt } from "./peac";
+import { deriveControls } from "./controls";
 import type { WalletSnapshotRecord } from "./types";
 import type { AppConfig } from "./config";
 
@@ -62,12 +63,13 @@ export function createApi({ config, store }: { config: AppConfig; store: Store }
       const settlement = store.getSettlement(id);
       const walletSnapshot = store.getWalletSnapshot(id);
       const receipts = store.listReceiptsByInteraction(id);
+      const controls = deriveControls(interaction, walletSnapshot);
       const attestationRows = [
         ...(interaction.wallet_address ? store.listAttestationsByWallet(interaction.wallet_address) : []),
         ...(settlement?.tx_hash ? store.listAttestationsByTxHash(settlement.tx_hash) : []),
       ];
       const attestations = Array.from(new Map(attestationRows.map((row) => [row.id, row])).values());
-      return ok({ interaction, evidence, settlement, walletSnapshot, receipts, attestations });
+      return ok({ interaction, controls, evidence, settlement, walletSnapshot, receipts, attestations });
     },
     ingestX402: async (body: Record<string, unknown> | undefined) => {
       const headers = extractX402Headers((body?.headers ?? {}) as Record<string, string>);

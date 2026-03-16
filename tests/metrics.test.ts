@@ -7,6 +7,8 @@ describe("metrics", () => {
       listInteractionsByWallet: () => [],
       getSettlement: () => undefined,
       getEvidence: () => [],
+      getWalletSnapshot: () => undefined,
+      getBaseTransaction: () => undefined,
       listReceiptsByInteraction: () => [],
       listAttestationsByWallet: () => [],
       listInteractionsByCounterparty: () => [],
@@ -16,10 +18,13 @@ describe("metrics", () => {
     expect(agent.throughput.burstiness).toBe(0);
     expect(agent.settlement.total).toBe(0);
     expect(agent.evidenceDensity).toBe(0);
+    expect(agent.controls.overall.total).toBe(0);
+    expect(agent.receiptAvailability.total).toBe(0);
 
     const counterparty = computeCounterpartyMetrics(store as unknown as import("../server/store").Store, "svc");
     expect(counterparty.volume.totalInteractions).toBe(0);
     expect(counterparty.paymentBehavior.count).toBe(0);
+    expect(counterparty.controls.overall.total).toBe(0);
   });
 
   it("computes agent metrics across counterparties and amounts", () => {
@@ -78,10 +83,58 @@ describe("metrics", () => {
           :
         id === "i2"
           ? { id: "i2:settlement", interaction_id: "i2", status: "failed", metadata: {} }
-          : { id: `${id}:settlement`, interaction_id: id, status: "confirmed", metadata: {} },
+          : {
+              id: `${id}:settlement`,
+              interaction_id: id,
+              status: "confirmed",
+              tx_hash: id === "i1" ? "0xtx" : id === "i4" ? "0xtx2" : undefined,
+              metadata: {},
+            },
       getEvidence: () => [
         { id: "e1", interaction_id: "i1", kind: "x402", payload: {}, created_at: "2024-01-01T00:00:00Z" },
       ],
+      getWalletSnapshot: (id: string) => {
+        switch (id) {
+          case "i1":
+            return {
+              id: "ws1",
+              interaction_id: "i1",
+              allowance: "2",
+              max_tx: "2",
+              approvals_required: false,
+              metadata: {},
+              created_at: "2024-01-01T00:00:00Z",
+            };
+          case "i2":
+            return {
+              id: "ws2",
+              interaction_id: "i2",
+              allowance: "1",
+              max_tx: "10",
+              approvals_required: true,
+              metadata: {},
+              created_at: "2024-01-02T00:00:00Z",
+            };
+          case "i4":
+            return {
+              id: "ws4",
+              interaction_id: "i4",
+              allowance: "10",
+              max_tx: "2",
+              approvals_required: false,
+              metadata: {},
+              created_at: "2024-01-02T00:00:00Z",
+            };
+          default:
+            return undefined;
+        }
+      },
+      getBaseTransaction: (txHash: string) =>
+        txHash === "0xtx"
+          ? { tx_hash: "0xtx", status: "confirmed", raw: {}, created_at: "2024-01-01T00:00:10Z" }
+          : txHash === "0xtx2"
+            ? { tx_hash: "0xtx2", status: "confirmed", raw: {}, created_at: "2024-01-02T02:00:10Z" }
+            : undefined,
       listReceiptsByInteraction: () => [],
       listAttestationsByWallet: () => [],
     } as const;
@@ -92,6 +145,11 @@ describe("metrics", () => {
     expect(metrics.paymentBehavior.count).toBe(3);
     expect(metrics.paymentBehavior.median).toBe(2);
     expect(metrics.settlement.successRate).toBeCloseTo(3 / 4);
+    expect(metrics.controls.approvals.required).toBe(1);
+    expect(metrics.controls.allowance.overLimit).toBe(1);
+    expect(metrics.controls.maxTx.overLimit).toBe(1);
+    expect(metrics.settlementLatency.total).toBe(2);
+    expect(metrics.settlementLatency.medianSeconds).toBeCloseTo((10 + 10) / 2);
   });
 
   it("includes receipts and attestations in evidence density", () => {
@@ -125,6 +183,8 @@ describe("metrics", () => {
               { id: "e2", interaction_id: "i1", kind: "base", payload: {}, created_at: "2024-01-01T00:00:00Z" },
             ]
           : [{ id: "e3", interaction_id: "i2", kind: "x402", payload: {}, created_at: "2024-01-01T00:00:00Z" }],
+      getWalletSnapshot: () => undefined,
+      getBaseTransaction: () => undefined,
       listReceiptsByInteraction: (id: string) =>
         id === "i1" ? [{ id: "r1", raw: {}, created_at: "2024-01-01T00:00:00Z" }] : [],
       listAttestationsByWallet: () => [
@@ -137,6 +197,44 @@ describe("metrics", () => {
     const metrics = computeAgentMetrics(store as unknown as import("../server/store").Store, "0xabc");
     // evidence: 2 + 1, receipts: 1, attestations: 2 => total 6 / 2 interactions = 3
     expect(metrics.evidenceDensity).toBe(3);
+    expect(metrics.receiptAvailability.rate).toBe(0.5);
+  });
+
+  it("ignores settlement latency when enrichment data is missing or invalid", () => {
+    const interactions = [
+      {
+        id: "i1",
+        created_at: "2024-01-01T00:00:00Z",
+        agent_id: "a1",
+        wallet_address: "0xabc",
+        counterparty: "svc",
+        protocol: "x402" as const,
+        summary: { paymentRequired: { amount: "1" } },
+      },
+      {
+        id: "i2",
+        created_at: "not-a-date",
+        agent_id: "a1",
+        wallet_address: "0xabc",
+        counterparty: "svc",
+        protocol: "x402" as const,
+        summary: { paymentRequired: { amount: "1" } },
+      },
+    ];
+
+    const store = {
+      listInteractionsByWallet: () => interactions,
+      getSettlement: (id: string) => ({ id: `${id}:s`, interaction_id: id, status: "confirmed", tx_hash: id, metadata: {} }),
+      getEvidence: () => [],
+      getWalletSnapshot: () => undefined,
+      getBaseTransaction: (txHash: string) =>
+        txHash === "i2" ? { tx_hash: "i2", status: "confirmed", raw: {}, created_at: "2024-01-01T00:00:05Z" } : undefined,
+      listReceiptsByInteraction: () => [],
+      listAttestationsByWallet: () => [],
+    } as const;
+
+    const metrics = computeAgentMetrics(store as unknown as import("../server/store").Store, "0xabc");
+    expect(metrics.settlementLatency.total).toBe(0);
   });
 
   it("computes counterparty metrics", () => {
@@ -163,10 +261,89 @@ describe("metrics", () => {
     const store = {
       listInteractionsByCounterparty: () => interactions,
       getSettlement: () => undefined,
+      getWalletSnapshot: () => undefined,
+      getBaseTransaction: () => undefined,
+      listReceiptsByInteraction: () => [],
     } as const;
     const metrics = computeCounterpartyMetrics(store as unknown as import("../server/store").Store, "svc");
     expect(metrics.volume.totalInteractions).toBe(2);
     expect(metrics.paymentBehavior.median).toBe(1.5);
+    expect(metrics.receiptAvailability.rate).toBe(0);
+  });
+
+  it("computes counterparty settlement latency when Base tx timestamps are known", () => {
+    const interactions = [
+      {
+        id: "i1",
+        created_at: "2024-01-01T00:00:00Z",
+        agent_id: "a1",
+        wallet_address: "0xabc",
+        counterparty: "svc",
+        protocol: "x402" as const,
+        summary: { paymentRequired: { amount: "1" } },
+      },
+    ];
+    const store = {
+      listInteractionsByCounterparty: () => interactions,
+      getSettlement: () => ({ id: "s1", interaction_id: "i1", status: "confirmed", tx_hash: "0xtx", metadata: {} }),
+      getBaseTransaction: (txHash: string) =>
+        txHash === "0xtx" ? { tx_hash: "0xtx", status: "confirmed", raw: {}, created_at: "2024-01-01T00:00:05Z" } : undefined,
+      getWalletSnapshot: () => ({
+        id: "ws",
+        interaction_id: "i1",
+        allowance: "2",
+        max_tx: "2",
+        approvals_required: false,
+        metadata: {},
+        created_at: "2024-01-01T00:00:00Z",
+      }),
+      listReceiptsByInteraction: () => [],
+    } as const;
+
+    const metrics = computeCounterpartyMetrics(store as unknown as import("../server/store").Store, "svc");
+    expect(metrics.settlementLatency.total).toBe(1);
+    expect(metrics.settlementLatency.avgSeconds).toBe(5);
+    expect(metrics.controls.overall.rate).toBe(1);
+  });
+
+  it("ignores counterparty settlement latency when base tx metadata is missing or invalid", () => {
+    const interactions = [
+      {
+        id: "i1",
+        created_at: "2024-01-01T00:00:00Z",
+        agent_id: "a1",
+        wallet_address: "0xabc",
+        counterparty: "svc",
+        protocol: "x402" as const,
+        summary: {},
+      },
+      {
+        id: "i2",
+        created_at: "not-a-date",
+        agent_id: "a1",
+        wallet_address: "0xabc",
+        counterparty: "svc",
+        protocol: "x402" as const,
+        summary: {},
+      },
+    ];
+    const store = {
+      listInteractionsByCounterparty: () => interactions,
+      getSettlement: (interactionId: string) => ({
+        id: `${interactionId}:s`,
+        interaction_id: interactionId,
+        status: "confirmed",
+        tx_hash: interactionId,
+        metadata: {},
+      }),
+      getBaseTransaction: (txHash: string) =>
+        txHash === "i2" ? { tx_hash: "i2", status: "confirmed", raw: {}, created_at: "2024-01-01T00:00:05Z" } : undefined,
+      getWalletSnapshot: () => undefined,
+      listReceiptsByInteraction: () => [],
+    } as const;
+
+    const metrics = computeCounterpartyMetrics(store as unknown as import("../server/store").Store, "svc");
+    expect(metrics.settlementLatency.total).toBe(0);
   });
 
   it("covers nullish and non-numeric branches", () => {
@@ -195,6 +372,8 @@ describe("metrics", () => {
       listInteractionsByWallet: () => interactions,
       getSettlement: () => undefined,
       getEvidence: () => [],
+      getWalletSnapshot: () => undefined,
+      getBaseTransaction: () => undefined,
       listReceiptsByInteraction: () => [],
       listAttestationsByWallet: () => [],
       listInteractionsByCounterparty: () => [

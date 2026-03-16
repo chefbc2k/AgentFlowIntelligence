@@ -247,6 +247,23 @@ describe("server api logic", () => {
     expect(detail.status).toBe(200);
     expect((detail.body as { receipts: unknown[] }).receipts).toHaveLength(1);
     expect((detail.body as { settlement: { status: string } }).settlement.status).toBe("confirmed");
+    expect((detail.body as { controls: { amount: number | null; source: string } }).controls).toEqual(
+      expect.objectContaining({ amount: 1, source: "wallet_snapshot" }),
+    );
+    expect(store.getBaseTransaction("0xtx")?.tx_hash).toBe("0xtx");
+    expect(store.getBaseTransaction("0xmissing")).toBeUndefined();
+
+    store.upsertBaseTransaction({
+      tx_hash: "0xblank",
+      status: "confirmed",
+      raw: { ok: true },
+      created_at: "2024-01-01T00:00:00Z",
+    });
+    const blank = store.getBaseTransaction("0xblank");
+    expect(blank?.block_number).toBeUndefined();
+    expect(blank?.from).toBeUndefined();
+    expect(blank?.to).toBeUndefined();
+    expect(blank?.value).toBeUndefined();
   });
 
   it("correlates stored attestations onto interaction packets (case-insensitive)", async () => {

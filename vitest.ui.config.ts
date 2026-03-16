@@ -8,6 +8,7 @@ export default defineConfig({
     coverage: {
       provider: "v8",
       reporter: ["text"],
+      reportsDirectory: "coverage/ui",
       include: ["src/**/*.{ts,tsx}"],
       exclude: ["src/**/*.d.ts"],
       thresholds: {

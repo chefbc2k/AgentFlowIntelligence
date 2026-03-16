@@ -294,6 +294,23 @@ export class Store {
     };
   }
 
+  getBaseTransaction(txHash: string) {
+    const row = this.db.prepare("select * from base_transactions where tx_hash = ?").get(txHash) as unknown as
+      | (BaseTransactionRecord & { raw: string; from_address?: string; to_address?: string })
+      | undefined;
+    if (!row) return undefined;
+    return {
+      tx_hash: row.tx_hash,
+      status: row.status,
+      block_number: row.block_number ?? undefined,
+      from: row.from_address ?? undefined,
+      to: row.to_address ?? undefined,
+      value: row.value ?? undefined,
+      raw: JSON.parse(row.raw),
+      created_at: row.created_at,
+    };
+  }
+
   listBaseTransactionsByWallet(wallet: string) {
     const rows = this.db
       .prepare("select * from base_transactions where from_address = ? or to_address = ? order by created_at desc")

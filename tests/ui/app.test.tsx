@@ -12,6 +12,15 @@ function jsonResponse(payload: unknown): FetchResponse {
 describe("AFI UI", () => {
   const fetchMock = global.fetch as unknown as ReturnType<typeof vi.fn>;
 
+  const emptyControls = {
+    approvals: { total: 0, required: 0, rate: 0 },
+    allowance: { total: 0, compliant: 0, overLimit: 0, rate: 0 },
+    maxTx: { total: 0, compliant: 0, overLimit: 0, rate: 0 },
+    overall: { total: 0, compliant: 0, rate: 0 },
+  };
+
+  const emptyLatency = { total: 0, avgSeconds: 0, minSeconds: 0, maxSeconds: 0, medianSeconds: 0 };
+
   beforeEach(() => {
     fetchMock.mockReset();
   });
@@ -45,8 +54,16 @@ describe("AFI UI", () => {
       },
     ];
 
-    const detail = {
+    const detailWithin = {
       interaction: interactions[0],
+      controls: {
+        amount: 1,
+        currency: "USDC",
+        approvalRequired: false,
+        withinAllowance: true,
+        withinMaxTx: true,
+        source: "wallet_snapshot",
+      },
       evidence: [{ id: "e1", kind: "x402", payload: { ok: true }, created_at: "2024-01-01T00:00:00Z" }],
       settlement: { id: "s1", status: "confirmed", tx_hash: "0xtx" },
       walletSnapshot: { wallet_address: "0xwallet", approvals_required: true },
@@ -54,7 +71,13 @@ describe("AFI UI", () => {
     };
 
     fetchMock.mockResolvedValueOnce(jsonResponse(interactions));
-    fetchMock.mockResolvedValueOnce(jsonResponse(detail));
+    fetchMock.mockResolvedValueOnce(jsonResponse(detailWithin));
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        ...detailWithin,
+        controls: { ...detailWithin.controls, amount: 2, currency: null, withinAllowance: false, withinMaxTx: null },
+      }),
+    );
 
     render(<App />);
 
@@ -68,9 +91,17 @@ describe("AFI UI", () => {
     const interactionsList = screen.getByRole("list");
     within(interactionsList).getAllByRole("button", { name: "View" })[0]?.click();
 
-    expect(await screen.findByText(detail.interaction.id)).toBeInTheDocument();
+    expect(await screen.findByText(detailWithin.interaction.id)).toBeInTheDocument();
     expect(screen.getByText("confirmed")).toBeInTheDocument();
-    expect(screen.getByText("Download JSON")).toHaveAttribute("download", `afi-${detail.interaction.id}.json`);
+    expect(screen.getByText("Download JSON")).toHaveAttribute("download", `afi-${detailWithin.interaction.id}.json`);
+    expect(screen.getByText("within-limits")).toBeInTheDocument();
+    expect(screen.getByText("1 USDC")).toBeInTheDocument();
+
+    within(interactionsList).getAllByRole("button", { name: "View" })[0]?.click();
+    expect(await screen.findByText("over-limit")).toBeInTheDocument();
+
+    const amountLabel = screen.getByText("Amount");
+    expect(amountLabel.parentElement?.querySelector("strong")).toHaveTextContent("2");
   });
 
   it("loads agent + counterparty metrics and supports early-return when inputs are empty", async () => {
@@ -92,6 +123,14 @@ describe("AFI UI", () => {
       counterparty: { unique: 2, top: { id: "svc", share: 0.9 }, repeatRate: 0.5 },
       paymentBehavior: { count: 1, avg: 2, min: 2, max: 2, median: 2 },
       settlement: { total: 2, successRate: 0.75 },
+      settlementLatency: { total: 1, avgSeconds: 1.2, minSeconds: 1.2, maxSeconds: 1.2, medianSeconds: 1.2 },
+      controls: {
+        approvals: { total: 2, required: 1, rate: 0.5 },
+        allowance: { total: 2, compliant: 2, overLimit: 0, rate: 1 },
+        maxTx: { total: 2, compliant: 1, overLimit: 1, rate: 0.5 },
+        overall: { total: 2, compliant: 1, rate: 0.5 },
+      },
+      receiptAvailability: { total: 12, withReceipt: 6, rate: 0.5 },
       evidenceDensity: 3.25,
     };
 
@@ -100,6 +139,9 @@ describe("AFI UI", () => {
       volume: { totalInteractions: 4, uniqueWallets: 2 },
       paymentBehavior: { count: 2, avg: 1.234, min: 1, max: 2, median: 1.5 },
       fulfillment: { total: 4, successRate: 0.5 },
+      settlementLatency: emptyLatency,
+      controls: emptyControls,
+      receiptAvailability: { total: 4, withReceipt: 0, rate: 0 },
     };
 
     fetchMock.mockResolvedValueOnce(jsonResponse(agentMetrics));
@@ -116,7 +158,7 @@ describe("AFI UI", () => {
     within(counterpartySection).getByRole("button", { name: "Load" }).click();
 
     expect(await screen.findByText("75%")).toBeInTheDocument();
-    expect(await screen.findByText("50%")).toBeInTheDocument();
+    expect(await within(counterpartySection).findByText("50%")).toBeInTheDocument();
     expect(screen.getAllByText("—").length).toBeGreaterThan(0);
 
     fetchMock.mockRejectedValueOnce(new Error("counterparty"));
@@ -138,6 +180,9 @@ describe("AFI UI", () => {
       counterparty: { unique: 0, top: null, repeatRate: 0 },
       paymentBehavior: { count: 0, avg: 0, min: 0, max: 0, median: 0 },
       settlement: { total: 0, successRate: 0 },
+      settlementLatency: emptyLatency,
+      controls: emptyControls,
+      receiptAvailability: { total: 0, withReceipt: 0, rate: 0 },
       evidenceDensity: 0,
     };
 
@@ -167,8 +212,20 @@ describe("AFI UI", () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse([{ id: "i1", created_at: "2024-01-01T00:00:00Z", protocol: "x402" }]),
     );
-    const noSettlementDetail: { interaction: { id: string }; settlement?: undefined } = { interaction: { id: "i1" } };
-    fetchMock.mockResolvedValueOnce(jsonResponse(noSettlementDetail));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ interaction: { id: "i1" } }));
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        interaction: { id: "i1" },
+        controls: {
+          amount: null,
+          currency: null,
+          approvalRequired: null,
+          withinAllowance: null,
+          withinMaxTx: null,
+          source: "none",
+        },
+      }),
+    );
     fetchMock.mockRejectedValueOnce(new Error("detail"));
 
     render(<App />);
@@ -179,6 +236,11 @@ describe("AFI UI", () => {
     expect(await screen.findByText("Download JSON")).toBeInTheDocument();
     const statusLabel = screen.getByText("Status");
     expect(statusLabel.parentElement?.querySelector("strong")).toHaveTextContent("unknown");
+    expect(screen.getByText("Controls").parentElement?.querySelector("strong")).toHaveTextContent("—");
+
+    viewButton.click();
+    expect(await screen.findByText("Download JSON")).toBeInTheDocument();
+    expect(screen.getByText("Controls").parentElement?.querySelector("strong")).toHaveTextContent("—");
 
     viewButton.click();
     expect(await screen.findByText(/Select an interaction/i)).toBeInTheDocument();

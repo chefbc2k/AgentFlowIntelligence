@@ -31,6 +31,15 @@ describe("normalizeInteraction", () => {
     expect(bundle.evidence.length).toBeGreaterThanOrEqual(3);
     expect(bundle.settlement.tx_hash).toBe("0xdef");
     expect(bundle.evidence.some((row) => row.kind === "wallet_snapshot")).toBe(true);
+    expect(bundle.interaction.summary.controls).toEqual(
+      expect.objectContaining({
+        amount: 1,
+        approvalRequired: true,
+        withinAllowance: true,
+        withinMaxTx: true,
+        source: "wallet_snapshot",
+      }),
+    );
   });
 
   it("handles raw PEAC receipts and missing tx hashes", () => {
@@ -46,6 +55,7 @@ describe("normalizeInteraction", () => {
     expect(bundle.settlement.status).toBe("unknown");
     const peac = bundle.evidence.find((row) => row.kind === "peac");
     expect(peac?.payload.decoded).toBeNull();
+    expect((bundle.interaction.summary.controls as { source: string }).source).toBe("none");
   });
 
   it("infers tx hash from payment response when txHash is omitted", () => {

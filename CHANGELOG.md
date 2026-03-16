@@ -31,6 +31,8 @@ Rules:
 - Correlated stored EAS attestations onto interaction packets (case-insensitive wallet/tx matching) and included receipts/attestations in agent evidence density.
 - Fixed local validation reliability under constrained/offline environments by (1) running Vitest with a repo-local temp dir to avoid macOS `/var/folders` ENOSPC failures and (2) swapping the SQLite backend to Node’s built-in `node:sqlite` to avoid native module ABI rebuild requirements.
 - Added regression coverage for SQLite transaction rollback and for nullish Locus transaction upserts; revalidated `npm run validate` with 100% lines/statements/functions/branches for server + UI.
+- Implemented spend-control compliance + fulfillment latency metrics (approval rate, allowance/max-tx compliance, receipt availability, and settlement latency) for both agent and counterparty profiles; exposed derived control facts on interaction packets and rendered them in the UI.
+- Hardened validation ergonomics by isolating server/UI coverage output directories (avoids shared `coverage/.tmp` races) and removing the unused native `better-sqlite3` dependency; revalidated `npm run validate` with 100% lines/statements/functions/branches.
 
 ## 2026-03-15
 
