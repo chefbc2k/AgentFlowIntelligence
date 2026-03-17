@@ -118,9 +118,7 @@ function computeOnchainMetrics(store: Store, wallet: string) {
       total: baseTxs.length,
       ...txStatus,
       uniqueCounterparties: txCounterparties.size,
-      topCounterparty: topTxCounterparty
-        ? { address: topTxCounterparty[0], share: topTxCounterparty[1] / (baseTxs.length || 1) }
-        : null,
+      topCounterparty: topTxCounterparty ? { address: topTxCounterparty[0], share: topTxCounterparty[1] / baseTxs.length } : null,
     },
     tokenTransfers: {
       total: transfers.length,

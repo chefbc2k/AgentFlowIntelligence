@@ -14,6 +14,7 @@ describe("metrics", () => {
       listReceiptsByInteraction: () => [],
       listAttestationsByWallet: () => [],
       listInteractionsByCounterparty: () => [],
+      listWalletsByCounterparty: () => [],
     } as const;
     const agent = computeAgentMetrics(store as unknown as import("../server/store").Store, "0xabc");
     expect(agent.throughput.totalInteractions).toBe(0);
@@ -84,16 +85,15 @@ describe("metrics", () => {
       getSettlement: (id: string) =>
         id === "i3"
           ? undefined
-          :
-        id === "i2"
-          ? { id: "i2:settlement", interaction_id: "i2", status: "failed", metadata: {} }
-          : {
-              id: `${id}:settlement`,
-              interaction_id: id,
-              status: "confirmed",
-              tx_hash: id === "i1" ? "0xtx" : id === "i4" ? "0xtx2" : undefined,
-              metadata: {},
-            },
+          : id === "i2"
+            ? { id: "i2:settlement", interaction_id: "i2", status: "failed", metadata: {} }
+            : {
+                id: `${id}:settlement`,
+                interaction_id: id,
+                status: "confirmed",
+                tx_hash: id === "i1" ? "0xtx" : id === "i4" ? "0xtx2" : undefined,
+                metadata: {},
+              },
       getEvidence: () => [
         { id: "e1", interaction_id: "i1", kind: "x402", payload: {}, created_at: "2024-01-01T00:00:00Z" },
       ],
@@ -181,6 +181,8 @@ describe("metrics", () => {
       ],
       listReceiptsByInteraction: () => [],
       listAttestationsByWallet: () => [],
+      listInteractionsByCounterparty: () => [],
+      listWalletsByCounterparty: () => [],
     } as const;
     const metrics = computeAgentMetrics(store as unknown as import("../server/store").Store, "0xabc");
     expect(metrics.throughput.totalInteractions).toBe(5);
@@ -250,10 +252,10 @@ describe("metrics", () => {
         { id: "att2", raw: {}, created_at: "2024-01-01T00:00:00Z" },
       ],
       listInteractionsByCounterparty: () => [],
+      listWalletsByCounterparty: () => [],
     } as const;
 
     const metrics = computeAgentMetrics(store as unknown as import("../server/store").Store, "0xabc");
-    // evidence: 2 + 1, receipts: 1, attestations: 2 => total 6 / 2 interactions = 3
     expect(metrics.evidenceDensity).toBe(3);
     expect(metrics.receiptAvailability.rate).toBe(0.5);
   });
@@ -291,6 +293,8 @@ describe("metrics", () => {
       listTokenTransfersByWallet: () => [],
       listReceiptsByInteraction: () => [],
       listAttestationsByWallet: () => [],
+      listInteractionsByCounterparty: () => [],
+      listWalletsByCounterparty: () => [],
     } as const;
 
     const metrics = computeAgentMetrics(store as unknown as import("../server/store").Store, "0xabc");
@@ -324,6 +328,9 @@ describe("metrics", () => {
       getWalletSnapshot: () => undefined,
       getBaseTransaction: () => undefined,
       listReceiptsByInteraction: () => [],
+      listWalletsByCounterparty: () => [],
+      listBaseTransactionsByWallet: () => [],
+      listTokenTransfersByWallet: () => [],
     } as const;
     const metrics = computeCounterpartyMetrics(store as unknown as import("../server/store").Store, "svc");
     expect(metrics.volume.totalInteractions).toBe(2);
@@ -358,6 +365,9 @@ describe("metrics", () => {
         created_at: "2024-01-01T00:00:00Z",
       }),
       listReceiptsByInteraction: () => [],
+      listWalletsByCounterparty: () => [],
+      listBaseTransactionsByWallet: () => [],
+      listTokenTransfersByWallet: () => [],
     } as const;
 
     const metrics = computeCounterpartyMetrics(store as unknown as import("../server/store").Store, "svc");
@@ -400,6 +410,9 @@ describe("metrics", () => {
         txHash === "i2" ? { tx_hash: "i2", status: "confirmed", raw: {}, created_at: "2024-01-01T00:00:05Z" } : undefined,
       getWalletSnapshot: () => undefined,
       listReceiptsByInteraction: () => [],
+      listWalletsByCounterparty: () => [],
+      listBaseTransactionsByWallet: () => [],
+      listTokenTransfersByWallet: () => [],
     } as const;
 
     const metrics = computeCounterpartyMetrics(store as unknown as import("../server/store").Store, "svc");
@@ -449,6 +462,7 @@ describe("metrics", () => {
           summary: {},
         } as unknown as import("../server/types").InteractionRecord,
       ],
+      listWalletsByCounterparty: () => [],
     } as const;
 
     const agent = computeAgentMetrics(store as unknown as import("../server/store").Store, "0xabc");
@@ -457,5 +471,53 @@ describe("metrics", () => {
 
     const counterparty = computeCounterpartyMetrics(store as unknown as import("../server/store").Store, "svc");
     expect(counterparty.volume.uniqueWallets).toBe(1);
+  });
+
+  it("ignores unrelated onchain rows and self-transfers while still tracking fallback token ids", () => {
+    const store = {
+      listInteractionsByWallet: () => [],
+      getSettlement: () => undefined,
+      getEvidence: () => [],
+      getWalletSnapshot: () => undefined,
+      getBaseTransaction: () => undefined,
+      listBaseTransactionsByWallet: () => [
+        { tx_hash: "0x1", status: "confirmed", from: undefined, to: "0xdef", raw: {}, created_at: "2024-01-01T00:00:00Z" },
+        { tx_hash: "0x2", status: "unknown", from: "0xother", to: "0xelse", raw: {}, created_at: "2024-01-01T00:00:00Z" },
+      ],
+      listTokenTransfersByWallet: () => [
+        {
+          id: "t1",
+          tx_hash: "0x1",
+          from: undefined,
+          to: "0xabc",
+          token_symbol: undefined,
+          token_address: undefined,
+          raw: {},
+          created_at: "2024-01-01T00:00:00Z",
+        },
+        {
+          id: "t2",
+          tx_hash: "0x2",
+          from: "0xabc",
+          to: "0xabc",
+          token_symbol: undefined,
+          token_address: "0xtoken",
+          raw: {},
+          created_at: "2024-01-01T00:00:00Z",
+        },
+      ],
+      listReceiptsByInteraction: () => [],
+      listAttestationsByWallet: () => [],
+      listInteractionsByCounterparty: () => [],
+      listWalletsByCounterparty: () => [],
+    } as const;
+
+    const metrics = computeAgentMetrics(store as unknown as import("../server/store").Store, "0xabc");
+    expect(metrics.onchain.transactions.uniqueCounterparties).toBe(0);
+    expect(metrics.onchain.transactions.topCounterparty).toBeNull();
+    expect(metrics.onchain.tokenTransfers.inbound).toBe(1);
+    expect(metrics.onchain.tokenTransfers.outbound).toBe(0);
+    expect(metrics.onchain.tokenTransfers.uniqueTokens).toBe(2);
+    expect(metrics.onchain.tokenTransfers.topToken?.symbol).toBe("unknown");
   });
 });

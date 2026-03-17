@@ -59,4 +59,39 @@ describe("x402 capture client", () => {
     expect(result.capture.settlement?.status).toBe(200);
     expect(result.capture.settlement?.headers.paymentResponse).toContain("0xtx");
   });
+
+  it("records handshake even when onPaymentRequired returns no signature", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response("payment required", {
+          status: 402,
+          headers: { "payment-required": "{\"amount\":\"1\"}" },
+        }),
+      )
+      .mockResolvedValueOnce(new Response("paid", { status: 200, headers: { "payment-response": "{\"ok\":true}" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await fetchWithX402Capture("https://example.com/paid", {
+      onPaymentRequired: async () => undefined,
+    });
+
+    expect(result.capture.challenge?.status).toBe(402);
+    expect(result.capture.authorization?.paymentSignature).toBeUndefined();
+    expect(result.capture.settlement?.status).toBe(200);
+  });
+
+  it("captures payment-signature supplied via retry headers", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("payment required", { status: 402, headers: { "payment-required": "{\"amount\":\"1\"}" } }))
+      .mockResolvedValueOnce(new Response("paid", { status: 200, headers: { "payment-response": "{\"ok\":true}" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await fetchWithX402Capture("https://example.com/paid", {
+      onPaymentRequired: async () => ({ retryInit: { headers: { "payment-signature": "sig-from-header" } } }),
+    });
+
+    expect(result.capture.authorization?.paymentSignature).toBe("sig-from-header");
+  });
 });

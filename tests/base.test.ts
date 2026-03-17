@@ -42,6 +42,34 @@ describe("base adapter", () => {
     expect(result.confirmedAt).toBe("1970-01-01T00:00:16.000Z");
   });
 
+  it("accepts block timestamps without a hex prefix", async () => {
+    const payload = { result: { hash: "0x1", blockNumber: "0x10", from: "0xaaa", to: "0xbbb", value: "1" } };
+    const fetchMock = vi.fn(async (input: string) => {
+      const url = new URL(input);
+      const action = url.searchParams.get("action");
+      if (action === "eth_getTransactionByHash") return okJson(payload);
+      if (action === "eth_getBlockByNumber") return okJson({ result: { timestamp: "10" } });
+      return notOk(500);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await fetchBaseTxFromEtherscan("key", "0x1");
+    expect(result.confirmedAt).toBe("1970-01-01T00:00:16.000Z");
+  });
+
+  it("does not report confirmedAt when the block timestamp is zero", async () => {
+    const payload = { result: { hash: "0x1", blockNumber: "0x10", from: "0xaaa", to: "0xbbb", value: "1" } };
+    const fetchMock = vi.fn(async (input: string) => {
+      const url = new URL(input);
+      const action = url.searchParams.get("action");
+      if (action === "eth_getTransactionByHash") return okJson(payload);
+      if (action === "eth_getBlockByNumber") return okJson({ result: { timestamp: "0x0" } });
+      return notOk(500);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await fetchBaseTxFromEtherscan("key", "0x1");
+    expect(result.confirmedAt).toBeUndefined();
+  });
+
   it("keeps tx lookup working when block timestamp enrichment fails", async () => {
     const payload = { result: { hash: "0x1", blockNumber: "0x10", from: "0xaaa", to: "0xbbb", value: "1" } };
     const fetchMock = vi.fn(async (input: string) => {

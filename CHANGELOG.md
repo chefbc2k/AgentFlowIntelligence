@@ -37,6 +37,20 @@ Rules:
 - Simplified service inference normalization branches so the runtime model matches actual behavior, then revalidated with `npm run validate` passing cleanly (lint, typecheck, build, server coverage, UI coverage all at 100%).
 - Fixed AFI’s service-model blind spot by normalizing `service` alongside `counterparty`, preserving wrapped API provider/endpoint and x402 slug hints from Locus payloads, and upgrading the Flow Explorer to render `wallet -> counterparty -> service` paths instead of collapsing service sectors into one opaque label.
 - Added migration + regression coverage for the new interaction `service` column, URL/service inference during x402 ingestion, Locus passthrough parsing, and three-node flow rendering; revalidated `npm run validate` with build + lint + typecheck + 100% lines/statements/functions/branches for server + UI.
+
+## 2026-03-17
+
+- Restored repo-wide validation to green by closing coverage gaps introduced by the new x402 transcript + onchain metrics slice.
+- Added targeted regression tests for:
+  - Base block timestamp parsing edge cases (hex + non-hex formats, zero timestamps).
+  - x402 capture handshake branches (no signature, signature via retry headers).
+  - `GET /api/interactions/:id` behavior for Locus interactions (x402 transcript omitted when protocol is not x402).
+  - UI handshake/settlement render branches (authorized, recorded, failed, settled, and fallback states).
+- Revalidated locally with `npm run validate` passing cleanly with 100% lines/statements/functions/branches for server + UI.
+- Replaced AFI’s raw x402-header-only packet view with a typed x402 transcript: added challenge/authorization/settlement decoders, captured two-step handshake state in the x402 client, exposed canonical x402 + correlated Base transaction sections on `GET /api/interactions/:id`, and rendered those protocol states directly in the packet panel.
+- Fixed a repo-level metrics contract regression by implementing `Store.listWalletsByCounterparty`, aligning async metrics endpoint tests with the current API, and removing dead branch logic in packet/onchain summaries that was blocking the repo-wide 100% coverage gate.
+- Added regression coverage for typed x402 decoding, handshake capture, canonical packet normalization, locus-vs-x402 packet API responses, Base timestamp parsing, metrics/onchain edge cases, and all UI handshake render states (`complete`, `authorized`, `challenge-only`, `settled`, `not-captured`, plus settlement `success`/`failed`/`recorded`).
+- Revalidated locally with `npm run validate`; lint passed, `tsc --noEmit` passed, the UI build passed, and both server + UI finished at 100% lines/statements/functions/branches.
 - Extended Base enrichment to attach a `confirmedAt` timestamp to confirmed transactions (via block timestamp lookup) and expanded agent metrics to include onchain transaction + token-transfer behavior (counterparty concentration, token diversity, inbound/outbound counts), rendered in the UI.
 - Upgraded the x402 client to capture a full paid-call transcript (402 challenge → signature → settlement) via an optional `onPaymentRequired` callback and added typed x402 packet decoding helpers; revalidated `npm run validate` with 100% coverage.
 

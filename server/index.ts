@@ -64,7 +64,7 @@ export function createApi({ config, store }: { config: AppConfig; store: Store }
       const walletSnapshot = store.getWalletSnapshot(id);
       const receipts = store.listReceiptsByInteraction(id);
       const controls = deriveControls(interaction, walletSnapshot);
-      const x402 = interaction.protocol === "x402" ? interaction.summary.x402 : undefined;
+      const x402 = interaction.summary.x402;
       const baseTransaction = settlement?.tx_hash ? store.getBaseTransaction(settlement.tx_hash) : undefined;
       const attestationRows = [
         ...(interaction.wallet_address ? store.listAttestationsByWallet(interaction.wallet_address) : []),

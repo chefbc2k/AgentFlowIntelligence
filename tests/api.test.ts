@@ -760,8 +760,8 @@ describe("server api logic", () => {
     await handlers.easAttestations({ query: {} }, res);
     await handlers.peacReceipt({ body: { receipt: "{\"ok\":true}" } }, res);
     await handlers.peacReceipt({}, res);
-    handlers.agentMetrics({ params: { wallet: "0xwallet" } }, res);
-    handlers.counterpartyMetrics({ params: { id: "svc" } }, res);
+    await handlers.agentMetrics({ params: { wallet: "0xwallet" } }, res);
+    await handlers.counterpartyMetrics({ params: { id: "svc" } }, res);
 
     expect(res.status).toHaveBeenCalled();
     expect(res.json).toHaveBeenCalled();
@@ -798,8 +798,38 @@ describe("server api logic", () => {
     const detail = api.getInteraction(interactionId);
     expect((detail.body as { evidence: Array<{ kind: string }> }).evidence.some((row) => row.kind === "peac")).toBe(true);
 
-    expect(api.agentMetrics("0xwallet").body).toEqual(expect.objectContaining({ wallet: "0xwallet" }));
-    expect(api.counterpartyMetrics("svc").body).toEqual(expect.objectContaining({ counterparty: "svc" }));
+    expect((await api.agentMetrics("0xwallet")).body).toEqual(expect.objectContaining({ wallet: "0xwallet" }));
+    expect((await api.counterpartyMetrics("svc")).body).toEqual(expect.objectContaining({ counterparty: "svc" }));
+  });
+
+  it("omits x402 transcript details for locus interactions", async () => {
+    const store = createTestStore();
+    store.upsertInteraction({
+      id: "locus-1",
+      created_at: "2024-01-01T00:00:00Z",
+      agent_id: "agent-1",
+      wallet_address: "0xwallet",
+      counterparty: "svc",
+      service: "/wrapped",
+      protocol: "locus",
+      summary: { locusTx: { id: "tx-1" } },
+    });
+
+    const api = createApi({
+      config: {
+        port: "0",
+        dbPath: ":memory:",
+        dataDir: "/tmp",
+        locusBaseUrl: "https://beta-api.paywithlocus.com",
+        easBaseUrl: "https://base.easscan.org/graphql",
+        easSepoliaUrl: "https://base-sepolia.easscan.org/graphql",
+      },
+      store,
+    });
+
+    const detail = api.getInteraction("locus-1");
+    expect(detail.status).toBe(200);
+    expect((detail.body as { x402?: unknown }).x402).toBeUndefined();
   });
 
   it("rejects locus calls when the key is missing", async () => {

@@ -83,6 +83,11 @@ describe("AFI UI", () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse({
         ...detailWithin,
+        x402: {
+          challenge: { present: false, decoded: { amount: "2" } },
+          authorization: { hasSignature: true, decoded: { payer: "0xpayer" } },
+          settlement: { present: false, success: null },
+        },
         controls: { ...detailWithin.controls, amount: 2, currency: null, withinAllowance: false, withinMaxTx: null },
       }),
     );
@@ -102,7 +107,7 @@ describe("AFI UI", () => {
     within(interactionsList).getAllByRole("button", { name: "View" })[0]?.click();
 
     expect(await screen.findByText(detailWithin.interaction.id)).toBeInTheDocument();
-    expect(screen.getByText("confirmed")).toBeInTheDocument();
+    expect(screen.getByText("Status").parentElement?.querySelector("strong")).toHaveTextContent("confirmed");
     expect(screen.getByText("complete")).toBeInTheDocument();
     expect(screen.getByText("Download JSON")).toHaveAttribute("download", `afi-${detailWithin.interaction.id}.json`);
     expect(screen.getByText("within-limits")).toBeInTheDocument();
@@ -114,6 +119,7 @@ describe("AFI UI", () => {
 
     within(interactionsList).getAllByRole("button", { name: "View" })[0]?.click();
     expect(await screen.findByText("over-limit")).toBeInTheDocument();
+    expect(screen.getByText("x402 Handshake").parentElement?.querySelector("strong")).toHaveTextContent("authorized");
 
     const amountLabel = screen.getByText("Amount");
     expect(amountLabel.parentElement?.querySelector("strong")).toHaveTextContent("2");
@@ -218,6 +224,10 @@ describe("AFI UI", () => {
       controls: emptyControls,
       receiptAvailability: { total: 0, withReceipt: 0, rate: 0 },
       evidenceDensity: 0,
+      onchain: {
+        transactions: { total: 0, confirmed: 0, failed: 0, unknown: 0, uniqueCounterparties: 0, topCounterparty: null },
+        tokenTransfers: { total: 0, inbound: 0, outbound: 0, uniqueTokens: 0, topToken: null },
+      },
     };
 
     fetchMock.mockResolvedValueOnce(jsonResponse(agentMetrics));
@@ -265,6 +275,78 @@ describe("AFI UI", () => {
         },
       }),
     );
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        interaction: { id: "i1" },
+        x402: {
+          challenge: { present: true },
+          authorization: { hasSignature: true },
+          settlement: { present: false, success: null },
+        },
+        controls: {
+          amount: null,
+          currency: null,
+          approvalRequired: null,
+          withinAllowance: null,
+          withinMaxTx: null,
+          source: "none",
+        },
+      }),
+    );
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        interaction: { id: "i1" },
+        x402: {
+          challenge: { present: false },
+          authorization: { hasSignature: false },
+          settlement: { present: true, success: false },
+        },
+        controls: {
+          amount: null,
+          currency: null,
+          approvalRequired: null,
+          withinAllowance: null,
+          withinMaxTx: null,
+          source: "none",
+        },
+      }),
+    );
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        interaction: { id: "i1" },
+        x402: {
+          challenge: { present: false },
+          authorization: { hasSignature: false },
+          settlement: { present: true, success: null },
+        },
+        controls: {
+          amount: null,
+          currency: null,
+          approvalRequired: null,
+          withinAllowance: null,
+          withinMaxTx: null,
+          source: "none",
+        },
+      }),
+    );
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        interaction: { id: "i1" },
+        x402: {
+          challenge: { present: false },
+          authorization: { hasSignature: false },
+          settlement: { present: false, success: null },
+        },
+        controls: {
+          amount: null,
+          currency: null,
+          approvalRequired: null,
+          withinAllowance: null,
+          withinMaxTx: null,
+          source: "none",
+        },
+      }),
+    );
     fetchMock.mockRejectedValueOnce(new Error("detail"));
 
     render(<App />);
@@ -276,11 +358,29 @@ describe("AFI UI", () => {
     const statusLabel = screen.getByText("Status");
     expect(statusLabel.parentElement?.querySelector("strong")).toHaveTextContent("unknown");
     expect(screen.getByText("Controls").parentElement?.querySelector("strong")).toHaveTextContent("—");
-    expect(screen.getByText("challenge-only")).toBeInTheDocument();
+    expect(screen.getByText("x402 Handshake").parentElement?.querySelector("strong")).toHaveTextContent("not-captured");
 
     viewButton.click();
     expect(await screen.findByText("Download JSON")).toBeInTheDocument();
     expect(screen.getByText("Controls").parentElement?.querySelector("strong")).toHaveTextContent("—");
+    expect(screen.getByText("x402 Handshake").parentElement?.querySelector("strong")).toHaveTextContent("challenge-only");
+
+    viewButton.click();
+    expect(await screen.findByText("Download JSON")).toBeInTheDocument();
+    expect(screen.getByText("x402 Handshake").parentElement?.querySelector("strong")).toHaveTextContent("authorized");
+
+    viewButton.click();
+    expect(await screen.findByText("Download JSON")).toBeInTheDocument();
+    expect(screen.getByText("x402 Handshake").parentElement?.querySelector("strong")).toHaveTextContent("settled");
+    expect(screen.getByText("Settlement").parentElement?.querySelector("strong")).toHaveTextContent("failed");
+
+    viewButton.click();
+    expect(await screen.findByText("Download JSON")).toBeInTheDocument();
+    expect(screen.getByText("Settlement").parentElement?.querySelector("strong")).toHaveTextContent("recorded");
+
+    viewButton.click();
+    expect(await screen.findByText("Download JSON")).toBeInTheDocument();
+    expect(screen.getByText("x402 Handshake").parentElement?.querySelector("strong")).toHaveTextContent("not-captured");
 
     viewButton.click();
     expect(await screen.findByText(/Select an interaction/i)).toBeInTheDocument();
