@@ -5,8 +5,8 @@ describe("normalizeInteraction", () => {
   it("builds deterministic interaction bundle", () => {
     const bundle = normalizeInteraction({
       agentId: "agent-1",
-      counterparty: "service-x",
       walletAddress: "0xabc",
+      url: "https://example.com/paid?token=redacted",
       paymentHeaders: {
         paymentRequired: "{\"amount\":\"1\"}",
         paymentSignature: "{\"sig\":\"0xabc\"}",
@@ -30,6 +30,8 @@ describe("normalizeInteraction", () => {
     expect(bundle.interaction.id).toHaveLength(64);
     expect(bundle.evidence.length).toBeGreaterThanOrEqual(3);
     expect(bundle.settlement.tx_hash).toBe("0xdef");
+    expect(bundle.interaction.counterparty).toBe("example.com");
+    expect(bundle.interaction.service).toBe("/paid");
     expect(bundle.evidence.some((row) => row.kind === "wallet_snapshot")).toBe(true);
     expect(bundle.interaction.summary.controls).toEqual(
       expect.objectContaining({
@@ -58,6 +60,66 @@ describe("normalizeInteraction", () => {
     expect((bundle.interaction.summary.controls as { source: string }).source).toBe("none");
   });
 
+  it("infers counterparty + service from request url when explicit values are absent", () => {
+    const bundle = normalizeInteraction({
+      url: "https://payments.example.com/v1/quote?asset=usdc",
+      paymentHeaders: {
+        paymentRequired: "{\"amount\":\"1\"}",
+      },
+    });
+
+    expect(bundle.interaction.counterparty).toBe("payments.example.com");
+    expect(bundle.interaction.service).toBe("/v1/quote");
+  });
+
+  it("falls back cleanly when request url is invalid", () => {
+    const bundle = normalizeInteraction({
+      url: "not a url",
+      paymentHeaders: {
+        paymentRequired: "{\"amount\":\"1\"}",
+      },
+    });
+
+    expect(bundle.interaction.counterparty).toBeUndefined();
+    expect(bundle.interaction.service).toBeUndefined();
+  });
+
+  it("keeps path-based service hints even when the url has no hostname", () => {
+    const bundle = normalizeInteraction({
+      url: "file:///paid/endpoint",
+      paymentHeaders: {
+        paymentRequired: "{\"amount\":\"1\"}",
+      },
+    });
+
+    expect(bundle.interaction.counterparty).toBeUndefined();
+    expect(bundle.interaction.service).toBe("/paid/endpoint");
+  });
+
+  it("infers wrapped-api service details from locus metadata", () => {
+    const bundle = normalizeInteraction({
+      locusMetadata: { provider: "github", endpoint: "/repos/openai/codex" },
+      paymentHeaders: {
+        paymentRequired: "{\"amount\":\"1\"}",
+      },
+    });
+
+    expect(bundle.interaction.counterparty).toBe("github");
+    expect(bundle.interaction.service).toBe("/repos/openai/codex");
+  });
+
+  it("infers x402 slugs from locus metadata", () => {
+    const bundle = normalizeInteraction({
+      locusMetadata: { slug: "demo-paid-endpoint" },
+      paymentHeaders: {
+        paymentRequired: "{\"amount\":\"1\"}",
+      },
+    });
+
+    expect(bundle.interaction.counterparty).toBeUndefined();
+    expect(bundle.interaction.service).toBe("demo-paid-endpoint");
+  });
+
   it("infers tx hash from payment response when txHash is omitted", () => {
     const bundle = normalizeInteraction({
       paymentHeaders: {
@@ -69,6 +131,32 @@ describe("normalizeInteraction", () => {
     expect(bundle.settlement.tx_hash).toBe("0xtx");
     expect(bundle.settlement.status).toBe("pending");
     expect(bundle.evidence.some((row) => row.kind === "base")).toBe(true);
+  });
+
+  it("infers service identity from locus metadata provider/endpoint", () => {
+    const bundle = normalizeInteraction({
+      paymentHeaders: { paymentRequired: "{\"amount\":\"1\"}" },
+      locusMetadata: { provider: "locus", endpoint: "/wrapped/demo" },
+    });
+    expect(bundle.interaction.counterparty).toBe("locus");
+    expect(bundle.interaction.service).toBe("/wrapped/demo");
+  });
+
+  it("infers service identity from locus metadata slug when provider/endpoint are missing", () => {
+    const bundle = normalizeInteraction({
+      paymentHeaders: { paymentRequired: "{\"amount\":\"1\"}" },
+      locusMetadata: { slug: "x402-demo" },
+    });
+    expect(bundle.interaction.service).toBe("x402-demo");
+  });
+
+  it("handles invalid service urls without throwing", () => {
+    const bundle = normalizeInteraction({
+      paymentHeaders: { paymentRequired: "{\"amount\":\"1\"}" },
+      url: "not a url",
+    });
+    expect(bundle.interaction.counterparty).toBeUndefined();
+    expect(bundle.interaction.service).toBeUndefined();
   });
 
   it("ignores nested transaction hashes that are not strings", () => {
@@ -117,8 +205,7 @@ describe("normalizeInteraction", () => {
     const bundle = normalizeLocusInteraction({
       agentId: "agent-1",
       walletAddress: "0xabc",
-      counterparty: "service-y",
-      locusTx: { id: "tx-1", amount: "2", createdAt: "2024-01-01T00:00:00Z" },
+      locusTx: { id: "tx-1", amount: "2", createdAt: "2024-01-01T00:00:00Z", provider: "svc", endpoint: "/wrapped" },
       txHash: "0xabc",
       walletSnapshot: {
         id: "ws2",
@@ -129,8 +216,34 @@ describe("normalizeInteraction", () => {
       },
     });
     expect(bundle.interaction.protocol).toBe("locus");
+    expect(bundle.interaction.counterparty).toBe("svc");
+    expect(bundle.interaction.service).toBe("/wrapped");
     expect(bundle.evidence.length).toBeGreaterThan(0);
     expect(bundle.evidence.some((row) => row.kind === "wallet_snapshot")).toBe(true);
+  });
+
+  it("infers wrapped-api provider and endpoint from locus transactions", () => {
+    const bundle = normalizeLocusInteraction({
+      walletAddress: "0xabc",
+      locusTx: {
+        provider: "github",
+        endpoint: "/repos/openai/codex",
+      },
+    });
+
+    expect(bundle.interaction.counterparty).toBe("github");
+    expect(bundle.interaction.service).toBe("/repos/openai/codex");
+  });
+
+  it("infers slug-only locus services", () => {
+    const bundle = normalizeLocusInteraction({
+      locusTx: {
+        slug: "demo-paid-endpoint",
+      },
+    });
+
+    expect(bundle.interaction.counterparty).toBeUndefined();
+    expect(bundle.interaction.service).toBe("demo-paid-endpoint");
   });
 
   it("builds locus bundles even when optional locus fields are missing", () => {

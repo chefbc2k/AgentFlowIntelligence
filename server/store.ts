@@ -21,9 +21,9 @@ export class Store {
 
   upsertInteraction(record: InteractionRecord) {
     const stmt = this.db.prepare(
-      `insert into interactions (id, created_at, agent_id, wallet_address, counterparty, protocol, summary)
-       values (@id, @created_at, @agent_id, @wallet_address, @counterparty, @protocol, @summary)
-       on conflict(id) do update set summary=excluded.summary`,
+      `insert into interactions (id, created_at, agent_id, wallet_address, counterparty, service, protocol, summary)
+       values (@id, @created_at, @agent_id, @wallet_address, @counterparty, @service, @protocol, @summary)
+       on conflict(id) do update set agent_id=excluded.agent_id, wallet_address=excluded.wallet_address, counterparty=excluded.counterparty, service=excluded.service, protocol=excluded.protocol, summary=excluded.summary`,
     );
     stmt.run({
       id: record.id,
@@ -31,6 +31,7 @@ export class Store {
       agent_id: record.agent_id ?? null,
       wallet_address: record.wallet_address ?? null,
       counterparty: record.counterparty ?? null,
+      service: record.service ?? null,
       protocol: record.protocol,
       summary: JSON.stringify(record.summary),
     });
@@ -207,6 +208,7 @@ export class Store {
       agent_id: row.agent_id ?? undefined,
       wallet_address: row.wallet_address ?? undefined,
       counterparty: row.counterparty ?? undefined,
+      service: row.service ?? undefined,
       protocol: row.protocol,
       summary: JSON.parse(row.summary) as InteractionRecord["summary"],
     }));
@@ -222,6 +224,7 @@ export class Store {
       agent_id: row.agent_id ?? undefined,
       wallet_address: wallet,
       counterparty: row.counterparty ?? undefined,
+      service: row.service ?? undefined,
       protocol: row.protocol,
       summary: JSON.parse(row.summary) as InteractionRecord["summary"],
     }));
@@ -237,6 +240,7 @@ export class Store {
       agent_id: row.agent_id ?? undefined,
       wallet_address: row.wallet_address ?? undefined,
       counterparty,
+      service: row.service ?? undefined,
       protocol: row.protocol,
       summary: JSON.parse(row.summary) as InteractionRecord["summary"],
     }));
@@ -253,6 +257,7 @@ export class Store {
       agent_id: row.agent_id ?? undefined,
       wallet_address: row.wallet_address ?? undefined,
       counterparty: row.counterparty ?? undefined,
+      service: row.service ?? undefined,
       protocol: row.protocol,
       summary: JSON.parse(row.summary) as InteractionRecord["summary"],
     };

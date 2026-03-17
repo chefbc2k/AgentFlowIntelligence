@@ -33,6 +33,10 @@ Rules:
 - Added regression coverage for SQLite transaction rollback and for nullish Locus transaction upserts; revalidated `npm run validate` with 100% lines/statements/functions/branches for server + UI.
 - Implemented spend-control compliance + fulfillment latency metrics (approval rate, allowance/max-tx compliance, receipt availability, and settlement latency) for both agent and counterparty profiles; exposed derived control facts on interaction packets and rendered them in the UI.
 - Hardened validation ergonomics by isolating server/UI coverage output directories (avoids shared `coverage/.tmp` races) and removing the unused native `better-sqlite3` dependency; revalidated `npm run validate` with 100% lines/statements/functions/branches.
+- Tightened the “100% coverage + typechecked boundary” claim by removing the stale `server/types.ts` coverage exclusion, converting the type-only server schema module to `server/types.d.ts`, extending `tsc --noEmit` to check `scripts/**/*.mjs`, and updating the temp-dir helper imports to pass JS typechecking.
+- Simplified service inference normalization branches so the runtime model matches actual behavior, then revalidated with `npm run validate` passing cleanly (lint, typecheck, build, server coverage, UI coverage all at 100%).
+- Fixed AFI’s service-model blind spot by normalizing `service` alongside `counterparty`, preserving wrapped API provider/endpoint and x402 slug hints from Locus payloads, and upgrading the Flow Explorer to render `wallet -> counterparty -> service` paths instead of collapsing service sectors into one opaque label.
+- Added migration + regression coverage for the new interaction `service` column, URL/service inference during x402 ingestion, Locus passthrough parsing, and three-node flow rendering; revalidated `npm run validate` with build + lint + typecheck + 100% lines/statements/functions/branches for server + UI.
 
 ## 2026-03-15
 

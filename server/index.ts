@@ -78,12 +78,16 @@ export function createApi({ config, store }: { config: AppConfig; store: Store }
       const agentId = body?.agentId ?? config.locusAgentId;
       const walletAddress = body?.walletAddress ?? undefined;
       const counterparty = body?.counterparty ?? undefined;
+      const service = body?.service ?? undefined;
+      const url = body?.url ?? undefined;
       const walletSnapshotInput = body?.walletSnapshot as WalletSnapshotRecord | undefined;
 
       const bundle = normalizeInteraction({
         agentId: typeof agentId === "string" ? agentId : undefined,
         walletAddress: typeof walletAddress === "string" ? walletAddress : undefined,
         counterparty: typeof counterparty === "string" ? counterparty : undefined,
+        service: typeof service === "string" ? service : undefined,
+        url: typeof url === "string" ? url : undefined,
         paymentHeaders: headers,
         txHash: typeof txHash === "string" ? txHash : undefined,
         locusMetadata: locusMetadata as Record<string, unknown> | undefined,
@@ -224,6 +228,7 @@ export function createApi({ config, store }: { config: AppConfig; store: Store }
           agent_id: config.locusAgentId,
           wallet_address: status.address,
           counterparty: "locus",
+          service: "locus_sync",
           protocol: "locus",
           summary: { kind: "locus_sync", status, balance },
         });
@@ -242,11 +247,17 @@ export function createApi({ config, store }: { config: AppConfig; store: Store }
         store.upsertWalletSnapshot(walletSnapshot);
 
         const locusRows = transactions.map((tx) => {
+          const txRecord = tx as Record<string, unknown>;
+          const provider = typeof txRecord.provider === "string" ? txRecord.provider : undefined;
+          const endpoint = typeof txRecord.endpoint === "string" ? txRecord.endpoint : undefined;
+          const slug = typeof txRecord.slug === "string" ? txRecord.slug : undefined;
+
           const bundle = normalizeLocusInteraction({
             agentId: config.locusAgentId,
             walletAddress: status.address,
-            counterparty: tx.counterparty,
-            locusTx: tx as Record<string, unknown>,
+            counterparty: tx.counterparty ?? provider,
+            service: endpoint ?? slug,
+            locusTx: txRecord,
             txHash: tx.txHash,
             walletSnapshot,
           });

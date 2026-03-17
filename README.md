@@ -33,7 +33,7 @@ Base enrichment uses Etherscan v2 when a key is present and falls back to Blocks
 
 ## API
 
-- `POST /api/ingest/x402` — ingest a paid call (headers + tx hash)
+- `POST /api/ingest/x402` — ingest a paid call (headers + tx hash + optional `url`/`service` hints)
 - `GET /api/interactions` — list interactions
 - `GET /api/interactions/:id` — evidence packet
 - `GET /api/locus/status` — Locus wallet status
@@ -74,6 +74,6 @@ const { response, capture } = await fetchWithX402Capture("https://example.com/pa
 await fetch("http://localhost:8787/api/ingest/x402", {
   method: "POST",
   headers: { "content-type": "application/json" },
-  body: JSON.stringify({ headers: capture.headers, txHash: "0x...", counterparty: "example.com" }),
+  body: JSON.stringify({ headers: capture.headers, url: capture.url, txHash: "0x..." }),
 });
 ```

@@ -41,6 +41,7 @@ describe("AFI UI", () => {
       created_at: "2024-01-01T00:00:00Z",
       wallet_address: "0xwallet",
       counterparty: "svc",
+      service: "/paid",
       protocol: "x402",
     }));
     const interactions = [
@@ -50,6 +51,7 @@ describe("AFI UI", () => {
         created_at: "2024-01-02T00:00:00Z",
         wallet_address: undefined,
         counterparty: undefined,
+        service: undefined,
         protocol: "locus",
       },
     ];
@@ -83,6 +85,8 @@ describe("AFI UI", () => {
 
     expect(await screen.findByText("11")).toBeInTheDocument();
     expect(screen.getByText("1")).toBeInTheDocument();
+    expect(screen.getByText("→ svc")).toBeInTheDocument();
+    expect(screen.getByText("→ /paid")).toBeInTheDocument();
 
     const bars = Array.from(document.querySelectorAll(".afi-edge-bar > div"));
     expect(bars[0]).toHaveStyle({ width: "100%" });
@@ -152,7 +156,7 @@ describe("AFI UI", () => {
     });
     within(agentSection).getByRole("button", { name: "Load" }).click();
 
-    fireEvent.change(within(counterpartySection).getByPlaceholderText("Counterparty ID / service"), {
+    fireEvent.change(within(counterpartySection).getByPlaceholderText("Counterparty ID"), {
       target: { value: "svc" },
     });
     within(counterpartySection).getByRole("button", { name: "Load" }).click();

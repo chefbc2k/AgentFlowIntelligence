@@ -4,6 +4,7 @@ export interface InteractionRecord {
   agent_id?: string;
   wallet_address?: string;
   counterparty?: string;
+  service?: string;
   protocol: "x402" | "locus";
   summary: Record<string, unknown>;
 }

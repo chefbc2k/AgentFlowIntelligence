@@ -6,6 +6,7 @@ type InteractionRow = {
   agent_id?: string;
   wallet_address?: string;
   counterparty?: string;
+  service?: string;
   protocol: string;
 };
 
@@ -107,14 +108,11 @@ export function App() {
     const map = new Map<string, number>();
     for (const interaction of interactions) {
       const left = interaction.wallet_address ?? "unknown";
-      const right = interaction.counterparty ?? "unknown";
-      const key = `${left}→${right}`;
+      const counterpartyLabel = interaction.counterparty ?? "unknown";
+      const key = interaction.service ? `${left}→${counterpartyLabel}→${interaction.service}` : `${left}→${counterpartyLabel}`;
       map.set(key, (map.get(key) ?? 0) + 1);
     }
-    return Array.from(map.entries()).map(([key, count]) => {
-      const [from, to] = key.split("→");
-      return { from, to, count };
-    });
+    return Array.from(map.entries()).map(([key, count]) => ({ nodes: key.split("→"), count }));
   }, [interactions]);
 
   const formatControlStatus = (controls?: InteractionDetail["controls"]) => {
@@ -205,7 +203,7 @@ export function App() {
           <h2>Counterparty Profile</h2>
           <div className="afi-form">
             <input
-              placeholder="Counterparty ID / service"
+              placeholder="Counterparty ID"
               value={counterparty}
               onChange={(event) => setCounterparty(event.target.value)}
             />
@@ -244,15 +242,17 @@ export function App() {
 
         <section className="afi-panel">
           <h2>Flow Explorer</h2>
-          <p className="afi-muted">Agent → Counterparty edges grouped by interaction count.</p>
+          <p className="afi-muted">Agent → Counterparty → Service paths grouped by interaction count.</p>
           <div className="afi-flow">
             {flowEdges.length === 0 && <p>No interactions yet.</p>}
             {flowEdges.map((edge) => (
-              <div key={`${edge.from}-${edge.to}`} className="afi-edge">
+              <div key={edge.nodes.join("→")} className="afi-edge">
                 <div className="afi-edge-label">
-                  <span>{edge.from}</span>
-                  <span>→</span>
-                  <span>{edge.to}</span>
+                  {edge.nodes.map((node, idx) => (
+                    <span key={`${node}:${idx}`}>
+                      {idx === 0 ? node : `→ ${node}`}
+                    </span>
+                  ))}
                 </div>
                 <div className="afi-edge-bar">
                   <div style={{ width: `${Math.min(edge.count * 10, 100)}%` }} />

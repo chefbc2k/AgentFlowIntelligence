@@ -6,7 +6,9 @@ import type { EvidenceRecord, InteractionRecord, SettlementRecord, WalletSnapsho
 export interface NormalizeInput {
   agentId?: string;
   counterparty?: string;
+  service?: string;
   walletAddress?: string;
+  url?: string;
   paymentHeaders: {
     paymentRequired?: string;
     paymentSignature?: string;
@@ -46,6 +48,33 @@ function extractSettlementSuccess(paymentResponse?: Record<string, unknown>): bo
   return typeof value === "boolean" ? value : undefined;
 }
 
+function inferServiceFromUrl(raw?: string): { counterparty?: string; service?: string } {
+  if (!raw) return {};
+  try {
+    const url = new URL(raw);
+    return {
+      counterparty: url.hostname === "" ? undefined : url.hostname,
+      service: url.pathname,
+    };
+  } catch {
+    return {};
+  }
+}
+
+function inferServiceFromLocusMetadata(metadata?: Record<string, unknown>): { counterparty?: string; service?: string } {
+  if (!metadata) return {};
+  const provider = metadata.provider;
+  const endpoint = metadata.endpoint;
+  if (typeof provider === "string" && typeof endpoint === "string") {
+    return { counterparty: provider, service: endpoint };
+  }
+  const slug = metadata.slug;
+  if (typeof slug === "string") {
+    return { service: slug };
+  }
+  return {};
+}
+
 export function normalizeInteraction(input: NormalizeInput): NormalizedBundle {
   const createdAt = new Date().toISOString();
   const paymentRequired = parseJsonHeader(input.paymentHeaders.paymentRequired);
@@ -55,6 +84,10 @@ export function normalizeInteraction(input: NormalizeInput): NormalizedBundle {
   const inferredTxHash = extractSettlementTxHash(paymentResponse);
   const txHash = input.txHash ?? inferredTxHash;
   const settlementSuccess = extractSettlementSuccess(paymentResponse);
+  const urlHints = inferServiceFromUrl(input.url);
+  const locusHints = inferServiceFromLocusMetadata(input.locusMetadata);
+  const counterparty = input.counterparty ?? urlHints.counterparty ?? locusHints.counterparty;
+  const service = input.service ?? urlHints.service ?? locusHints.service;
   const interactionId = interactionIdFromParts([
     input.paymentHeaders.paymentRequired ?? "",
     input.paymentHeaders.paymentSignature ?? "",
@@ -67,7 +100,8 @@ export function normalizeInteraction(input: NormalizeInput): NormalizedBundle {
     created_at: createdAt,
     agent_id: input.agentId,
     wallet_address: input.walletAddress,
-    counterparty: input.counterparty,
+    counterparty,
+    service,
     protocol: "x402",
     summary: {
       paymentRequired,
@@ -165,13 +199,30 @@ export interface NormalizeLocusInput {
   agentId?: string;
   walletAddress?: string;
   counterparty?: string;
+  service?: string;
   locusTx: Record<string, unknown>;
   txHash?: string;
   walletSnapshot?: WalletSnapshotRecord;
 }
 
+function inferServiceFromLocusTx(locusTx: Record<string, unknown>): { counterparty?: string; service?: string } {
+  const provider = locusTx.provider;
+  const endpoint = locusTx.endpoint;
+  if (typeof provider === "string" && typeof endpoint === "string") {
+    return { counterparty: provider, service: endpoint };
+  }
+  const slug = locusTx.slug;
+  if (typeof slug === "string") {
+    return { service: slug };
+  }
+  return {};
+}
+
 export function normalizeLocusInteraction(input: NormalizeLocusInput): NormalizedBundle {
   const createdAt = new Date().toISOString();
+  const hints = inferServiceFromLocusTx(input.locusTx);
+  const counterparty = input.counterparty ?? hints.counterparty;
+  const service = input.service ?? hints.service;
   const interactionId = interactionIdFromParts([
     String(input.locusTx.id ?? ""),
     input.txHash ?? "",
@@ -183,7 +234,8 @@ export function normalizeLocusInteraction(input: NormalizeLocusInput): Normalize
     created_at: createdAt,
     agent_id: input.agentId,
     wallet_address: input.walletAddress,
-    counterparty: input.counterparty,
+    counterparty,
+    service,
     protocol: "locus",
     summary: {
       locusTx: input.locusTx,

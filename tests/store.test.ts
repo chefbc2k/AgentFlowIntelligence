@@ -3,6 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../server/store";
+import { openDatabase } from "../server/db";
 
 describe("store", () => {
   it("round-trips all record types", () => {
@@ -15,6 +16,7 @@ describe("store", () => {
       agent_id: "agent",
       wallet_address: "0xwallet",
       counterparty: "svc",
+      service: "/paid",
       protocol: "x402",
       summary: { paymentRequired: { amount: "1" } },
     });
@@ -132,6 +134,7 @@ describe("store", () => {
     expect(store.listInteractions()).toHaveLength(1);
     expect(store.listInteractionsByWallet("0xwallet")).toHaveLength(1);
     expect(store.listInteractionsByCounterparty("svc")).toHaveLength(1);
+    expect(store.getInteraction("i1")?.service).toBe("/paid");
     expect(store.getInteraction("i1")?.summary).toEqual({ paymentRequired: { amount: "1" } });
     expect(store.getInteraction("missing")).toBeUndefined();
 
@@ -171,6 +174,7 @@ describe("store", () => {
       agent_id: undefined,
       wallet_address: "0xwallet2",
       counterparty: undefined,
+      service: undefined,
       protocol: "x402",
       summary: {},
     });
@@ -181,6 +185,7 @@ describe("store", () => {
       agent_id: undefined,
       wallet_address: undefined,
       counterparty: "svc2",
+      service: undefined,
       protocol: "x402",
       summary: {},
     });
@@ -324,6 +329,7 @@ describe("store", () => {
     const interaction = store.getInteraction("i-null");
     expect(interaction?.agent_id).toBeUndefined();
     expect(interaction?.counterparty).toBeUndefined();
+    expect(interaction?.service).toBeUndefined();
 
     const interactions = store.listInteractions();
     expect(interactions.find((row) => row.id === "i-null")?.agent_id).toBeUndefined();
@@ -378,5 +384,36 @@ describe("store", () => {
 
     const receipts = store.listReceiptsByInteraction("i-null");
     expect(receipts[0]?.tx_hash).toBeUndefined();
+  });
+
+  it("migrates older interaction tables to include the service column", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "afi-store-migrate-"));
+    const dbPath = join(dataDir, "afi.sqlite");
+    const db = openDatabase({ dbPath, dataDir });
+    db.exec("drop table interactions");
+    db.exec(`
+      create table interactions (
+        id text primary key,
+        created_at text not null,
+        agent_id text,
+        wallet_address text,
+        counterparty text,
+        protocol text not null,
+        summary text not null
+      );
+    `);
+
+    const migratedStore = new Store({ dbPath, dataDir });
+    migratedStore.upsertInteraction({
+      id: "i-migrated",
+      created_at: "2024-01-01T00:00:00Z",
+      wallet_address: "0xwallet",
+      counterparty: "svc",
+      service: "/quote",
+      protocol: "x402",
+      summary: {},
+    });
+
+    expect(migratedStore.getInteraction("i-migrated")?.service).toBe("/quote");
   });
 });

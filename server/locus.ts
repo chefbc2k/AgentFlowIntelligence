@@ -15,7 +15,7 @@ const locusTxSchema = z.array(
     createdAt: z.string().optional(),
     txHash: z.string().optional(),
     counterparty: z.string().optional(),
-  }),
+  }).passthrough(),
 );
 
 const locusBalanceSchema = z

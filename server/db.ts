@@ -35,6 +35,7 @@ export function openDatabase(config: DatabaseConfig) {
       agent_id text,
       wallet_address text,
       counterparty text,
+      service text,
       protocol text not null,
       summary text not null
     );
@@ -117,6 +118,11 @@ export function openDatabase(config: DatabaseConfig) {
       created_at text not null
     );
   `);
+
+  const columns = db.prepare("pragma table_info(interactions)").all() as Array<{ name?: string }>;
+  if (!columns.some((col) => col.name === "service")) {
+    db.exec("alter table interactions add column service text;");
+  }
 
   return {
     exec: db.exec.bind(db),

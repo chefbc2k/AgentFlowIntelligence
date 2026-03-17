@@ -239,12 +239,16 @@ describe("server api logic", () => {
     const ingest = await api.ingestX402({
       headers: { "payment-required": "{\"amount\":\"1\"}", "peac-receipt": "{\"ok\":true}" },
       txHash: "0xtx",
+      url: "https://example.com/paid?token=redacted",
       walletSnapshot: { id: "ws1", wallet_address: "0xwallet" },
     });
     expect(ingest.body.ok).toBe(true);
 
     const detail = api.getInteraction((ingest.body as { interactionId: string }).interactionId);
     expect(detail.status).toBe(200);
+    expect((detail.body as { interaction: { counterparty?: string; service?: string } }).interaction).toEqual(
+      expect.objectContaining({ counterparty: "example.com", service: "/paid" }),
+    );
     expect((detail.body as { receipts: unknown[] }).receipts).toHaveLength(1);
     expect((detail.body as { settlement: { status: string } }).settlement.status).toBe("confirmed");
     expect((detail.body as { controls: { amount: number | null; source: string } }).controls).toEqual(
@@ -356,14 +360,21 @@ describe("server api logic", () => {
       agentId: "agent-1",
       walletAddress: "0xwallet",
       counterparty: "svc",
+      service: "/paid",
       txHash: 123,
       locusMetadata: { ok: true },
       walletSnapshot: { id: "ws1", wallet_address: "0xwallet" },
     });
     const interactionId = (ingest.body as { interactionId: string }).interactionId;
     const detail = api.getInteraction(interactionId);
-    expect((detail.body as { interaction: { agent_id?: string; wallet_address?: string; counterparty?: string } }).interaction).toEqual(
-      expect.objectContaining({ agent_id: "agent-1", wallet_address: "0xwallet", counterparty: "svc" }),
+    expect(
+      (
+        detail.body as {
+          interaction: { agent_id?: string; wallet_address?: string; counterparty?: string; service?: string };
+        }
+      ).interaction,
+    ).toEqual(
+      expect.objectContaining({ agent_id: "agent-1", wallet_address: "0xwallet", counterparty: "svc", service: "/paid" }),
     );
 
     const ingest2 = await api.ingestX402({
@@ -371,12 +382,66 @@ describe("server api logic", () => {
       agentId: 123,
       walletAddress: 456,
       counterparty: true,
+      service: { bad: true },
+      url: 789,
     });
     const detail2 = api.getInteraction((ingest2.body as { interactionId: string }).interactionId);
     expect(
-      (detail2.body as { interaction: { agent_id?: string | null; wallet_address?: string | null; counterparty?: string | null } })
-        .interaction.agent_id == null,
+      (
+        detail2.body as {
+          interaction: {
+            agent_id?: string | null;
+            wallet_address?: string | null;
+            counterparty?: string | null;
+            service?: string | null;
+          };
+        }
+      ).interaction.agent_id == null,
     ).toBe(true);
+    expect(
+      (
+        detail2.body as {
+          interaction: {
+            counterparty?: string | null;
+            service?: string | null;
+          };
+        }
+      ).interaction.service == null,
+    ).toBe(true);
+  });
+
+  it("infers service identity from ingest urls and service metadata", async () => {
+    stubFetchForHappyPath();
+    const store = createTestStore();
+    const api = createApi({
+      config: {
+        port: "0",
+        dbPath: ":memory:",
+        dataDir: "/tmp",
+        locusBaseUrl: "https://beta-api.paywithlocus.com",
+        easBaseUrl: "https://base.easscan.org/graphql",
+        easSepoliaUrl: "https://base-sepolia.easscan.org/graphql",
+      },
+      store,
+    });
+
+    const fromUrl = await api.ingestX402({
+      headers: { "payment-required": "{\"amount\":\"1\"}" },
+      url: "https://payments.example.com/v1/quote?asset=usdc",
+    });
+    const urlInteraction = api.getInteraction((fromUrl.body as { interactionId: string }).interactionId);
+    expect(
+      (urlInteraction.body as { interaction: { counterparty?: string; service?: string } }).interaction,
+    ).toEqual(expect.objectContaining({ counterparty: "payments.example.com", service: "/v1/quote" }));
+
+    const fromLocusMetadata = await api.ingestX402({
+      headers: { "payment-required": "{\"amount\":\"1\"}" },
+      locusMetadata: { provider: "github", endpoint: "/repos/openai/codex" },
+    });
+    const metadataInteraction = api.getInteraction((fromLocusMetadata.body as { interactionId: string }).interactionId);
+    expect(
+      (metadataInteraction.body as { interaction: { counterparty?: string; service?: string } }).interaction,
+    ).toEqual(expect.objectContaining({ counterparty: "github", service: "/repos/openai/codex" }));
   });
 
   it("keeps ingestion alive when base enrichment fails", async () => {
@@ -513,6 +578,50 @@ describe("server api logic", () => {
     expect(snapshot?.balance).toBe("9");
     expect(snapshot?.approvals_required).toBe(false);
     expect(store.listInteractions().some((row) => row.protocol === "locus")).toBe(true);
+  });
+
+  it("captures provider/endpoint and slug service hints during locus ingestion", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string) => {
+        const url = new URL(input);
+        if (url.hostname !== "beta-api.paywithlocus.com") return notOk(404);
+
+        if (url.pathname === "/api/status") return okJson({ address: "0xwallet", status: "ok" });
+        if (url.pathname === "/api/pay/balance") return okJson({ balance: "2" });
+        if (url.pathname === "/api/pay/transactions") {
+          return okJson([
+            { id: "wrapped-1", provider: "github", endpoint: "/repos/openai/codex", txHash: "0xtx1" },
+            { id: "x402-1", slug: "demo-paid-endpoint", txHash: "0xtx2" },
+          ]);
+        }
+
+        return notOk(404);
+      }),
+    );
+
+    const store = createTestStore();
+    const api = createApi({
+      config: {
+        port: "0",
+        dbPath: ":memory:",
+        dataDir: "/tmp",
+        locusApiKey: "key",
+        locusBaseUrl: "https://beta-api.paywithlocus.com",
+        easBaseUrl: "https://base.easscan.org/graphql",
+        easSepoliaUrl: "https://base-sepolia.easscan.org/graphql",
+      },
+      store,
+    });
+
+    const result = await api.locusIngestTransactions();
+    expect(result.status).toBe(200);
+
+    const wrapped = store.listInteractions().find((row) => row.service === "/repos/openai/codex");
+    const slugged = store.listInteractions().find((row) => row.service === "demo-paid-endpoint");
+
+    expect(wrapped).toEqual(expect.objectContaining({ counterparty: "github", service: "/repos/openai/codex" }));
+    expect(slugged).toEqual(expect.objectContaining({ service: "demo-paid-endpoint" }));
   });
 
   it("covers locus sync nullish fallbacks", async () => {
