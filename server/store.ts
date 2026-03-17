@@ -414,8 +414,8 @@ export class Store {
     );
     stmt.run({
       id: record.id,
-      token_address: record.token_address ?? null,
-      chain_id: record.chain_id ?? null,
+      token_address: record.token_address,
+      chain_id: record.chain_id,
       symbol: record.symbol ?? null,
       price_usd: record.price_usd,
       source: record.source,
@@ -433,8 +433,8 @@ export class Store {
     if (!row) return undefined;
     return {
       id: row.id,
-      token_address: row.token_address ?? undefined,
-      chain_id: row.chain_id ?? undefined,
+      token_address: row.token_address,
+      chain_id: row.chain_id,
       symbol: row.symbol ?? undefined,
       price_usd: row.price_usd,
       source: row.source,
@@ -452,7 +452,7 @@ export class Store {
     stmt.run({
       id: record.id,
       contract_address: record.contract_address,
-      chain_id: record.chain_id ?? null,
+      chain_id: record.chain_id,
       protocol_name: record.protocol_name ?? null,
       protocol_category: record.protocol_category ?? null,
       source: record.source,
@@ -471,7 +471,7 @@ export class Store {
     return {
       id: row.id,
       contract_address: row.contract_address,
-      chain_id: row.chain_id ?? undefined,
+      chain_id: row.chain_id,
       protocol_name: row.protocol_name ?? undefined,
       protocol_category: row.protocol_category ?? undefined,
       source: row.source,
@@ -488,5 +488,22 @@ export class Store {
       )
       .all(cutoffDate) as unknown as Array<{ wallet_address: string }>;
     return rows.map((row) => row.wallet_address);
+  }
+
+  listObservedTokens() {
+    const rows = this.db
+      .prepare(
+        `select distinct token_address, token_symbol
+         from token_transfers
+         where token_address is not null
+         order by created_at desc`,
+      )
+      .all() as unknown as Array<{ token_address?: string; token_symbol?: string }>;
+
+    return rows.map((row) => ({
+      address: row.token_address as string,
+      chainId: 8453,
+      symbol: row.token_symbol ?? undefined,
+    }));
   }
 }

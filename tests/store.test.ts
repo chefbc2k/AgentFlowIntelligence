@@ -500,4 +500,89 @@ describe("store", () => {
 
     expect(store.getActiveWallets(7)).toEqual(["0xactive"]);
   });
+
+  it("normalizes nullish optional fields for prices and protocol labels", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "afi-store-nullish-"));
+    const store = new Store({ dbPath: ":memory:", dataDir });
+
+    store.upsertPrice({
+      id: "price-nullish",
+      token_address: "0xnull",
+      chain_id: 0,
+      price_usd: "1",
+      source: "coingecko",
+      timestamp: "2024-01-01T00:00:00Z",
+      raw: {},
+    });
+    store.upsertProtocolLabel({
+      id: "label-nullish",
+      contract_address: "0xcontract-null",
+      chain_id: 0,
+      source: "dune",
+      metadata: {},
+      created_at: "2024-01-01T00:00:00Z",
+    });
+
+    expect(store.getLatestPrice("0xnull", 0)).toEqual(
+      expect.objectContaining({
+        token_address: "0xnull",
+        chain_id: 0,
+        symbol: undefined,
+      }),
+    );
+    expect(store.getProtocolLabel("0xcontract-null", 0)).toEqual(
+      expect.objectContaining({
+        chain_id: 0,
+        protocol_name: undefined,
+        protocol_category: undefined,
+      }),
+    );
+  });
+
+  it("lists observed tokens from token transfer history", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "afi-store-observed-"));
+    const store = new Store({ dbPath: ":memory:", dataDir });
+
+    store.upsertTokenTransfers([
+      {
+        id: "transfer-observed",
+        tx_hash: "0xtx",
+        token_address: "0xtoken",
+        token_symbol: "TOK",
+        raw: {},
+        created_at: "2024-01-01T00:00:00Z",
+      },
+      {
+        id: "transfer-observed-2",
+        tx_hash: "0xtx2",
+        token_address: "0xtoken-2",
+        token_symbol: undefined,
+        raw: {},
+        created_at: "2024-01-02T00:00:00Z",
+      },
+    ]);
+
+    expect(store.listObservedTokens()).toEqual([
+      { address: "0xtoken-2", chainId: 8453, symbol: undefined },
+      { address: "0xtoken", chainId: 8453, symbol: "TOK" },
+    ]);
+  });
+
+  it("normalizes null observed-token symbols to undefined", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "afi-store-observed-null-"));
+    const store = new Store({ dbPath: ":memory:", dataDir });
+
+    store.upsertTokenTransfers([
+      {
+        id: "transfer-observed-null",
+        tx_hash: "0xtx-null",
+        token_address: "0xtoken-null",
+        token_symbol: undefined,
+        raw: {},
+        created_at: "2024-01-03T00:00:00Z",
+      },
+    ]);
+
+    expect(store.listObservedTokens()).toEqual([{ address: "0xtoken-null", chainId: 8453, symbol: undefined }]);
+  });
 });

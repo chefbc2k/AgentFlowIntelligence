@@ -10,6 +10,8 @@ if (argv.length === 0) {
 
 const tmpDir = path.join(process.cwd(), ".afi-tmp");
 fs.mkdirSync(tmpDir, { recursive: true });
+fs.mkdirSync(path.join(process.cwd(), "coverage", "server", ".tmp"), { recursive: true });
+fs.mkdirSync(path.join(process.cwd(), "coverage", "ui", ".tmp"), { recursive: true });
 
 const command = argv[0];
 const commandArgs = argv.slice(1);

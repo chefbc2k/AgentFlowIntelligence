@@ -6,7 +6,7 @@ import { extractX402Headers } from "./x402";
 import { normalizeInteraction, normalizeLocusInteraction } from "./normalize";
 import { LocusClient } from "./locus";
 import { fetchBaseTokenTransfers, fetchBaseTx, fetchBaseTxHistory } from "./base";
-import { computeAgentMetrics, computeCounterpartyMetrics, enrichWithProtocolLabels } from "./metrics";
+import { computeAgentMetrics, computeCounterpartyMetrics, enrichInteractionForReadModel } from "./metrics";
 import { fetchEasAttestations } from "./eas";
 import { parsePeacReceipt } from "./peac";
 import { deriveControls } from "./controls";
@@ -58,7 +58,7 @@ export function createApi({ config, store }: { config: AppConfig; store: Store }
 
   return {
     health: () => ok({ ok: true, timestamp: new Date().toISOString() }),
-    listInteractions: () => ok(store.listInteractions()),
+    listInteractions: () => ok(store.listInteractions().map((interaction) => enrichInteractionForReadModel(store, interaction))),
     getInteraction: (id: string) => {
       const interaction = store.getInteraction(id);
       if (!interaction) return fail(404, "not_found");
@@ -79,36 +79,7 @@ export function createApi({ config, store }: { config: AppConfig; store: Store }
     getInteractionEnriched: (id: string) => {
       const interaction = store.getInteraction(id);
       if (!interaction) return fail(404, "not_found");
-
-      // Enrich with protocol labels
-      const enrichedWithProtocol = enrichWithProtocolLabels([interaction], store)[0];
-
-      // Compute USD amount
-      let amountUSD: number | null = null;
-      const summary = interaction.summary ?? {};
-      const paymentRequired = (summary as Record<string, unknown>).paymentRequired as Record<string, unknown> | undefined;
-
-      if (paymentRequired) {
-        const rawAmount = typeof paymentRequired.amount === "string" ? Number(paymentRequired.amount) : null;
-        const tokenAddress = typeof paymentRequired.asset === "string" ? paymentRequired.asset : null;
-        const parsedChainId =
-          typeof paymentRequired.network === "number"
-            ? paymentRequired.network
-            : typeof paymentRequired.network === "string"
-              ? Number(paymentRequired.network)
-              : NaN;
-        const chainId = Number.isFinite(parsedChainId) ? parsedChainId : 8453;
-
-        if (rawAmount !== null && Number.isFinite(rawAmount) && tokenAddress) {
-          const price = store.getLatestPrice(tokenAddress, chainId);
-          if (price) {
-            const priceUSD = Number(price.price_usd);
-            if (Number.isFinite(priceUSD)) {
-              amountUSD = rawAmount * priceUSD;
-            }
-          }
-        }
-      }
+      const enrichedInteraction = enrichInteractionForReadModel(store, interaction);
 
       const evidence = store.getEvidence(id);
       const settlement = store.getSettlement(id);
@@ -124,8 +95,8 @@ export function createApi({ config, store }: { config: AppConfig; store: Store }
       const attestations = Array.from(new Map(attestationRows.map((row) => [row.id, row])).values());
 
       return ok({
-        interaction: enrichedWithProtocol,
-        amountUSD,
+        interaction: enrichedInteraction,
+        amountUSD: enrichedInteraction.amountUSD,
         controls,
         x402,
         evidence,

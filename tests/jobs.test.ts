@@ -197,6 +197,7 @@ describe("JobScheduler", () => {
     const upsertProtocolLabel = vi.fn();
     const store = {
       getActiveWallets: () => ["0xwallet"],
+      listObservedTokens: () => [],
       upsertProtocolLabel,
     } as unknown as Store;
     const duneClient = {
@@ -236,7 +237,7 @@ describe("JobScheduler", () => {
 
     scheduler = new JobScheduler({
       config: createConfig(),
-      store: { getActiveWallets: () => [] } as unknown as Store,
+      store: { getActiveWallets: () => [], listObservedTokens: () => [] } as unknown as Store,
       pricingService: {} as PricingService,
       duneClient: {
         getProtocolActivity: vi.fn(async () => []),
@@ -246,7 +247,7 @@ describe("JobScheduler", () => {
 
     const noDuneScheduler = new JobScheduler({
       config: createConfig(),
-      store: { getActiveWallets: () => ["0xwallet"] } as unknown as Store,
+      store: { getActiveWallets: () => ["0xwallet"], listObservedTokens: () => [] } as unknown as Store,
       pricingService: {} as PricingService,
     });
     await (noDuneScheduler as unknown as { refreshProtocolLabels: () => Promise<void> }).refreshProtocolLabels();
@@ -266,6 +267,7 @@ describe("JobScheduler", () => {
     const store = {
       upsertPrice: vi.fn(),
       getActiveWallets: () => ["0xwallet"],
+      listObservedTokens: () => [],
       upsertProtocolLabel: vi.fn(),
     } as unknown as Store;
     const pricingService = {
@@ -296,6 +298,40 @@ describe("JobScheduler", () => {
     expect(errorSpy).toHaveBeenCalled();
 
     warnSpy.mockRestore();
+    errorSpy.mockRestore();
+  });
+
+  it("logs non-Error failures from price and protocol refreshers", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+
+    scheduler = new JobScheduler({
+      config: createConfig(),
+      store: {
+        upsertPrice: vi.fn(),
+        getActiveWallets: () => ["0xwallet"],
+        listObservedTokens: () => [],
+        upsertProtocolLabel: vi.fn(),
+      } as unknown as Store,
+      pricingService: {
+        getPriceUSD: vi.fn().mockRejectedValue("price boom"),
+      } as unknown as PricingService,
+      duneClient: {
+        getProtocolActivity: vi.fn(async () => {
+          throw "dune boom";
+        }),
+      } as unknown as DuneClient,
+    });
+
+    await (scheduler as unknown as { refreshPrices: () => Promise<void> }).refreshPrices();
+    await (scheduler as unknown as { refreshProtocolLabels: () => Promise<void> }).refreshProtocolLabels();
+
+    expect(errorSpy).toHaveBeenCalledWith("[JobScheduler] Error fetching price for USDC:", "price boom");
+    expect(errorSpy).toHaveBeenCalledWith(
+      "[JobScheduler] Error fetching protocol activity for 0xwallet:",
+      "dune boom",
+    );
+
     errorSpy.mockRestore();
   });
 
@@ -360,6 +396,43 @@ describe("JobScheduler", () => {
     expect(errorSpy).toHaveBeenCalledWith(
       "[JobScheduler] Job protocol-labels failed:",
       expect.any(Error),
+    );
+  });
+
+  it("logs non-Error values from price and protocol refresh failures", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+
+    scheduler = new JobScheduler({
+      config: createConfig({ duneApiKey: "test-key" }),
+      store: {
+        upsertPrice: vi.fn(),
+        getActiveWallets: () => ["0xwallet"],
+        listObservedTokens: () => [],
+        upsertProtocolLabel: vi.fn(),
+      } as unknown as Store,
+      pricingService: {
+        getPriceUSD: vi.fn(async () => {
+          throw "price-string";
+        }),
+      } as unknown as PricingService,
+      duneClient: {
+        getProtocolActivity: vi.fn(async () => {
+          throw "protocol-string";
+        }),
+      } as unknown as DuneClient,
+    });
+
+    await (scheduler as unknown as { refreshPrices: () => Promise<void> }).refreshPrices();
+    await (scheduler as unknown as { refreshProtocolLabels: () => Promise<void> }).refreshProtocolLabels();
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[JobScheduler] Error fetching price"),
+      "price-string",
+    );
+    expect(errorSpy).toHaveBeenCalledWith(
+      "[JobScheduler] Error fetching protocol activity for 0xwallet:",
+      "protocol-string",
     );
   });
 

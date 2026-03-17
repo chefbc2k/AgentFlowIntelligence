@@ -66,7 +66,7 @@ export class DuneClient extends HttpClient {
     const pollInterval = 2000; // 2 seconds
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      await this.sleep(pollInterval);
+      await new Promise((resolve) => setTimeout(resolve, pollInterval));
 
       const results = await this.get<DuneResultsResponse>(`/execution/${executionId}/results`);
 

@@ -3,6 +3,13 @@ import type { Store } from "./store";
 import type { PricingService } from "./pricing";
 import { deriveControls } from "./controls";
 
+export type EnrichedInteractionRecord = InteractionRecord & {
+  amountUSD: number | null;
+  protocolName?: string;
+  protocolCategory?: string;
+  protocolContract?: string;
+};
+
 function toDateBucket(iso: string) {
   return iso.slice(0, 10);
 }
@@ -28,6 +35,19 @@ function toChainId(value: unknown): number | null {
   return null;
 }
 
+function parseNumericString(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  return null;
+}
+
 function coefficientOfVariation(values: number[]) {
   const mean = values.length === 0 ? 0 : values.reduce((sum, v) => sum + v, 0) / values.length;
   if (mean === 0) return 0;
@@ -39,16 +59,44 @@ function summarizeAmounts(amounts: number[]) {
   if (amounts.length === 0) {
     return { count: 0, avg: 0, min: 0, max: 0, median: 0 };
   }
+
   const sorted = [...amounts].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
   const median = sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
   const total = amounts.reduce((sum, v) => sum + v, 0);
+
   return {
     count: amounts.length,
     avg: total / amounts.length,
     min: sorted[0],
     max: sorted[sorted.length - 1],
     median,
+  };
+}
+
+function summarizeUsdAmounts(amounts: number[]) {
+  return {
+    ...summarizeAmounts(amounts),
+    totalVolumeUSD: amounts.reduce((sum, value) => sum + value, 0),
+  };
+}
+
+function summarizeSeconds(values: number[]) {
+  if (values.length === 0) {
+    return { total: 0, avgSeconds: 0, minSeconds: 0, maxSeconds: 0, medianSeconds: 0 };
+  }
+
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  const medianSeconds = sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+  const totalSeconds = values.reduce((sum, v) => sum + v, 0);
+
+  return {
+    total: values.length,
+    avgSeconds: totalSeconds / values.length,
+    minSeconds: sorted[0],
+    maxSeconds: sorted[sorted.length - 1],
+    medianSeconds,
   };
 }
 
@@ -59,109 +107,106 @@ function extractAmount(interaction: InteractionRecord): number | null {
     const parsed = Number(locusTx.amount);
     return Number.isFinite(parsed) ? parsed : null;
   }
+
   const paymentRequired = (summary as Record<string, unknown>).paymentRequired as Record<string, unknown> | undefined;
   if (paymentRequired && typeof paymentRequired.amount === "string") {
     const parsed = Number(paymentRequired.amount);
     return Number.isFinite(parsed) ? parsed : null;
   }
+
+  return null;
+}
+
+function extractTokenInfo(interaction: InteractionRecord): { address: string; chainId: number } | null {
+  const summary = interaction.summary ?? {};
+  const paymentRequired = (summary as Record<string, unknown>).paymentRequired as Record<string, unknown> | undefined;
+
+  if (!paymentRequired) {
+    return null;
+  }
+
+  const asset = paymentRequired.asset;
+  const chainId = toChainId(paymentRequired.network);
+
+  if (typeof asset === "string" && chainId !== null) {
+    return { address: asset, chainId };
+  }
+
   return null;
 }
 
 function settlementSuccessRate(settlements: Array<SettlementRecord | undefined>) {
-  const filtered = settlements.filter(Boolean) as SettlementRecord[];
+  const filtered = settlements.filter(isDefined);
   if (filtered.length === 0) return { total: 0, successRate: 0 };
-  const success = filtered.filter((s) => s.status === "confirmed").length;
+  const success = filtered.filter((settlement) => settlement.status === "confirmed").length;
   return { total: filtered.length, successRate: success / filtered.length };
 }
 
-function summarizeSeconds(values: number[]) {
-  if (values.length === 0) {
-    return { total: 0, avgSeconds: 0, minSeconds: 0, maxSeconds: 0, medianSeconds: 0 };
+function getStoredAmountUSD(store: Store, interaction: InteractionRecord): number | null {
+  const rawAmount = extractAmount(interaction);
+  const tokenInfo = extractTokenInfo(interaction);
+  if (rawAmount === null || tokenInfo === null) {
+    return null;
   }
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  const medianSeconds = sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
-  const totalSeconds = values.reduce((sum, v) => sum + v, 0);
+
+  const price = store.getLatestPrice(tokenInfo.address, tokenInfo.chainId);
+  const priceUSD = price ? parseNumericString(price.price_usd) : null;
+  if (priceUSD === null) {
+    return null;
+  }
+
+  return rawAmount * priceUSD;
+}
+
+function getProtocolContract(store: Store, interaction: InteractionRecord): string | undefined {
+  const settlement = store.getSettlement(interaction.id);
+  const metadata = settlement?.metadata;
+  const baseTx =
+    metadata && typeof metadata === "object"
+      ? ((metadata as Record<string, unknown>).baseTx as Record<string, unknown> | undefined)
+      : undefined;
+  const contractAddress = typeof baseTx?.to === "string" ? baseTx.to : interaction.counterparty;
+  return typeof contractAddress === "string" ? contractAddress : undefined;
+}
+
+function getProtocolLabel(store: Store, interaction: InteractionRecord) {
+  const contractAddress = getProtocolContract(store, interaction);
+  if (!contractAddress) {
+    return { contractAddress: undefined, label: undefined };
+  }
+
   return {
-    total: values.length,
-    avgSeconds: totalSeconds / values.length,
-    minSeconds: sorted[0],
-    maxSeconds: sorted[sorted.length - 1],
-    medianSeconds,
+    contractAddress,
+    label: store.getProtocolLabel(contractAddress, 8453),
   };
 }
 
-function computeOnchainMetrics(store: Store, wallet: string) {
-  const walletLower = wallet.toLowerCase();
-  const baseTxs = store.listBaseTransactionsByWallet(wallet);
-  const transfers = store.listTokenTransfersByWallet(wallet);
-
-  const txStatus = { confirmed: 0, failed: 0, unknown: 0 };
-  const txCounterparties = new Map<string, number>();
-  for (const tx of baseTxs) {
-    if (tx.status === "confirmed") txStatus.confirmed += 1;
-    else if (tx.status === "failed") txStatus.failed += 1;
-    else txStatus.unknown += 1;
-
-    const from = toLower(tx.from);
-    const to = toLower(tx.to);
-    const counterparty = from === walletLower ? to : to === walletLower ? from : undefined;
-    if (counterparty) {
-      txCounterparties.set(counterparty, (txCounterparties.get(counterparty) ?? 0) + 1);
-    }
-  }
-
-  const txEntries = Array.from(txCounterparties.entries()).sort((a, b) => b[1] - a[1]);
-  const topTxCounterparty = txEntries[0];
-
-  const transferTokens = new Map<string, number>();
-  let inboundTransfers = 0;
-  let outboundTransfers = 0;
-  for (const transfer of transfers) {
-    const from = toLower(transfer.from);
-    const to = toLower(transfer.to);
-    if (to === walletLower && from !== walletLower) inboundTransfers += 1;
-    else if (from === walletLower && to !== walletLower) outboundTransfers += 1;
-
-    const token = transfer.token_symbol ?? transfer.token_address ?? "unknown";
-    transferTokens.set(token, (transferTokens.get(token) ?? 0) + 1);
-  }
-
-  const tokenEntries = Array.from(transferTokens.entries()).sort((a, b) => b[1] - a[1]);
-  const topToken = tokenEntries[0];
-  const tokenTotal = transfers.length || 1;
+export function enrichInteractionForReadModel(store: Store, interaction: InteractionRecord): EnrichedInteractionRecord {
+  const { contractAddress, label } = getProtocolLabel(store, interaction);
 
   return {
-    transactions: {
-      total: baseTxs.length,
-      ...txStatus,
-      uniqueCounterparties: txCounterparties.size,
-      topCounterparty: topTxCounterparty ? { address: topTxCounterparty[0], share: topTxCounterparty[1] / baseTxs.length } : null,
-    },
-    tokenTransfers: {
-      total: transfers.length,
-      inbound: inboundTransfers,
-      outbound: outboundTransfers,
-      uniqueTokens: transferTokens.size,
-      topToken: topToken ? { symbol: topToken[0], share: topToken[1] / tokenTotal } : null,
-    },
+    ...interaction,
+    amountUSD: getStoredAmountUSD(store, interaction),
+    protocolName: label?.protocol_name,
+    protocolCategory: label?.protocol_category,
+    protocolContract: contractAddress,
   };
 }
 
 function computeControlsSummary(controls: Array<ReturnType<typeof deriveControls>>) {
-  const approvalKnown = controls.filter((c) => c.approvalRequired !== null);
-  const approvalRequired = approvalKnown.filter((c) => c.approvalRequired).length;
+  const approvalKnown = controls.filter((control) => control.approvalRequired !== null);
+  const approvalRequired = approvalKnown.filter((control) => control.approvalRequired).length;
 
-  const allowanceKnown = controls.filter((c) => c.withinAllowance !== null);
-  const allowanceCompliant = allowanceKnown.filter((c) => c.withinAllowance).length;
-  const allowanceOver = allowanceKnown.filter((c) => c.withinAllowance === false).length;
+  const allowanceKnown = controls.filter((control) => control.withinAllowance !== null);
+  const allowanceCompliant = allowanceKnown.filter((control) => control.withinAllowance).length;
+  const allowanceOver = allowanceKnown.filter((control) => control.withinAllowance === false).length;
 
-  const maxTxKnown = controls.filter((c) => c.withinMaxTx !== null);
-  const maxTxCompliant = maxTxKnown.filter((c) => c.withinMaxTx).length;
-  const maxTxOver = maxTxKnown.filter((c) => c.withinMaxTx === false).length;
+  const maxTxKnown = controls.filter((control) => control.withinMaxTx !== null);
+  const maxTxCompliant = maxTxKnown.filter((control) => control.withinMaxTx).length;
+  const maxTxOver = maxTxKnown.filter((control) => control.withinMaxTx === false).length;
 
-  const eligible = controls.filter((c) => c.withinAllowance !== null || c.withinMaxTx !== null);
-  const compliant = eligible.filter((c) => c.withinAllowance !== false && c.withinMaxTx !== false).length;
+  const eligible = controls.filter((control) => control.withinAllowance !== null || control.withinMaxTx !== null);
+  const compliant = eligible.filter((control) => control.withinAllowance !== false && control.withinMaxTx !== false).length;
 
   return {
     approvals: {
@@ -189,122 +234,138 @@ function computeControlsSummary(controls: Array<ReturnType<typeof deriveControls
   };
 }
 
-/**
- * Extract token address and chain ID from interaction.
- * AFI should not invent asset metadata when the packet did not capture it.
- */
-function extractTokenInfo(interaction: InteractionRecord): { address: string; chainId: number } | null {
-  const summary = interaction.summary ?? {};
-  const paymentRequired = (summary as Record<string, unknown>).paymentRequired as Record<string, unknown> | undefined;
+function computeOnchainMetrics(store: Store, wallet: string) {
+  const walletLower = wallet.toLowerCase();
+  const baseTxs = store.listBaseTransactionsByWallet(wallet);
+  const transfers = store.listTokenTransfersByWallet(wallet);
 
-  if (paymentRequired) {
-    const asset = paymentRequired.asset;
-    const chainId = toChainId(paymentRequired.network);
+  const txStatus = { confirmed: 0, failed: 0, unknown: 0 };
+  const txCounterparties = new Map<string, number>();
+  const protocolCounts = new Map<string, number>();
+  const categoryCounts = new Map<string, number>();
 
-    if (typeof asset === "string" && chainId !== null) {
-      return { address: asset, chainId };
+  for (const tx of baseTxs) {
+    if (tx.status === "confirmed") txStatus.confirmed += 1;
+    else if (tx.status === "failed") txStatus.failed += 1;
+    else txStatus.unknown += 1;
+
+    const from = toLower(tx.from);
+    const to = toLower(tx.to);
+    const counterparty = from === walletLower ? to : to === walletLower ? from : undefined;
+    if (counterparty) {
+      txCounterparties.set(counterparty, (txCounterparties.get(counterparty) ?? 0) + 1);
+    }
+
+    if (typeof tx.to === "string") {
+      const label = store.getProtocolLabel(tx.to, 8453);
+      if (label?.protocol_name) {
+        protocolCounts.set(label.protocol_name, (protocolCounts.get(label.protocol_name) ?? 0) + 1);
+      }
+      if (label?.protocol_category) {
+        categoryCounts.set(label.protocol_category, (categoryCounts.get(label.protocol_category) ?? 0) + 1);
+      }
     }
   }
 
-  return null;
+  const transferTokens = new Map<string, number>();
+  let inboundTransfers = 0;
+  let outboundTransfers = 0;
+  let inboundVolumeUSD = 0;
+  let outboundVolumeUSD = 0;
+
+  for (const transfer of transfers) {
+    const from = toLower(transfer.from);
+    const to = toLower(transfer.to);
+    const isInbound = to === walletLower && from !== walletLower;
+    const isOutbound = from === walletLower && to !== walletLower;
+
+    if (isInbound) inboundTransfers += 1;
+    else if (isOutbound) outboundTransfers += 1;
+
+    const token = transfer.token_symbol ?? transfer.token_address ?? "unknown";
+    transferTokens.set(token, (transferTokens.get(token) ?? 0) + 1);
+
+    const price = transfer.token_address ? store.getLatestPrice(transfer.token_address, 8453) : undefined;
+    const priceUSD = price ? parseNumericString(price.price_usd) : null;
+    const amount = parseNumericString(transfer.value);
+    const volumeUSD = amount !== null && priceUSD !== null ? amount * priceUSD : null;
+
+    if (volumeUSD !== null) {
+      if (isInbound) inboundVolumeUSD += volumeUSD;
+      if (isOutbound) outboundVolumeUSD += volumeUSD;
+    }
+  }
+
+  const txEntries = Array.from(txCounterparties.entries()).sort((a, b) => b[1] - a[1]);
+  const topTxCounterparty = txEntries[0];
+  const tokenEntries = Array.from(transferTokens.entries()).sort((a, b) => b[1] - a[1]);
+  const topToken = tokenEntries[0];
+  const tokenTotal = transfers.length || 1;
+  const protocolEntries = Array.from(protocolCounts.entries()).sort((a, b) => b[1] - a[1]);
+  const topProtocol = protocolEntries[0];
+
+  const categoryBreakdown: Record<string, number> = {};
+  for (const [category, count] of categoryCounts.entries()) {
+    categoryBreakdown[category] = count;
+  }
+
+  return {
+    transactions: {
+      total: baseTxs.length,
+      ...txStatus,
+      uniqueCounterparties: txCounterparties.size,
+      topCounterparty: topTxCounterparty ? { address: topTxCounterparty[0], share: topTxCounterparty[1] / baseTxs.length } : null,
+    },
+    tokenTransfers: {
+      total: transfers.length,
+      inbound: inboundTransfers,
+      outbound: outboundTransfers,
+      inboundVolumeUSD,
+      outboundVolumeUSD,
+      totalVolumeUSD: inboundVolumeUSD + outboundVolumeUSD,
+      uniqueTokens: transferTokens.size,
+      topToken: topToken ? { symbol: topToken[0], share: topToken[1] / tokenTotal } : null,
+    },
+    protocols: {
+      unique: protocolCounts.size,
+      topProtocol: topProtocol ? { name: topProtocol[0], share: topProtocol[1] / baseTxs.length } : null,
+      categoryBreakdown,
+    },
+  };
 }
 
-/**
- * SOLVES PROBLEM 1: USD Normalization
- * Enriches interactions with USD-normalized payment amounts
- */
 export async function enrichWithPricing(
   interactions: InteractionRecord[],
   pricingService: PricingService | null,
 ): Promise<Array<InteractionRecord & { amountUSD: number | null }>> {
   if (!pricingService) {
-    return interactions.map((i) => ({ ...i, amountUSD: null }));
+    return interactions.map((interaction) => ({ ...interaction, amountUSD: null }));
   }
 
   const enriched: Array<InteractionRecord & { amountUSD: number | null }> = [];
 
   for (const interaction of interactions) {
     const rawAmount = extractAmount(interaction);
-
-    if (rawAmount === null) {
-      enriched.push({ ...interaction, amountUSD: null });
-      continue;
-    }
-
     const tokenInfo = extractTokenInfo(interaction);
-    if (!tokenInfo) {
+    if (rawAmount === null || tokenInfo === null) {
       enriched.push({ ...interaction, amountUSD: null });
       continue;
     }
-    const amountUSD = await pricingService.normalizeToUSD(
-      rawAmount,
-      tokenInfo.address,
-      tokenInfo.chainId,
-    );
 
+    const amountUSD = await pricingService.normalizeToUSD(rawAmount, tokenInfo.address, tokenInfo.chainId);
     enriched.push({ ...interaction, amountUSD });
   }
 
   return enriched;
 }
 
-/**
- * SOLVES PROBLEM 2: Protocol Semantics
- * Enriches interactions with protocol labels (DEX, bridge, escrow, etc.)
- */
-export function enrichWithProtocolLabels(
-  interactions: InteractionRecord[],
-  store: Store,
-): Array<InteractionRecord & { protocolName?: string; protocolCategory?: string }> {
-  const enriched: Array<InteractionRecord & { protocolName?: string; protocolCategory?: string }> = [];
-
-  for (const interaction of interactions) {
-    const settlement = store.getSettlement(interaction.id);
-
-    // Try to get contract address from settlement or counterparty
-    let contractAddress: string | undefined;
-
-    if (settlement?.metadata) {
-      const baseTx = (settlement.metadata as Record<string, unknown>).baseTx as Record<string, unknown> | undefined;
-      contractAddress = baseTx?.to as string | undefined;
-    }
-
-    if (!contractAddress && interaction.counterparty) {
-      contractAddress = interaction.counterparty;
-    }
-
-    if (!contractAddress) {
-      enriched.push({ ...interaction });
-      continue;
-    }
-
-    // Lookup protocol label
-    const label = store.getProtocolLabel(contractAddress, 8453);
-
-    enriched.push({
-      ...interaction,
-      protocolName: label?.protocol_name,
-      protocolCategory: label?.protocol_category,
-    });
-  }
-
-  return enriched;
+export function enrichWithProtocolLabels(interactions: InteractionRecord[], store: Store): EnrichedInteractionRecord[] {
+  return interactions.map((interaction) => enrichInteractionForReadModel(store, interaction));
 }
 
-/**
- * SOLVES PROBLEM 2: Compute protocol diversity metrics
- */
-function computeProtocolMetrics(
-  enrichedInteractions: Array<InteractionRecord & { protocolName?: string; protocolCategory?: string }>,
-  store: Store,
-) {
-  const protocols = enrichedInteractions
-    .map((i) => i.protocolName)
-    .filter(isDefined);
-
-  const categories = enrichedInteractions
-    .map((i) => i.protocolCategory)
-    .filter(isDefined);
+function computeProtocolMetrics(enrichedInteractions: EnrichedInteractionRecord[], store: Store) {
+  const protocols = enrichedInteractions.map((interaction) => interaction.protocolName).filter(isDefined);
+  const categories = enrichedInteractions.map((interaction) => interaction.protocolCategory).filter(isDefined);
 
   const protocolCounts = new Map<string, number>();
   for (const protocol of protocols) {
@@ -320,72 +381,98 @@ function computeProtocolMetrics(
   const topProtocol = protocolEntries[0];
 
   const categoryBreakdown: Record<string, number> = {};
-  for (const [category, count] of categoryCounts) {
+  for (const [category, count] of categoryCounts.entries()) {
     categoryBreakdown[category] = count;
   }
 
-  // Compute escrow completion rate (if we have escrow interactions)
-  const escrowInteractions = enrichedInteractions.filter((i) => i.protocolCategory === "escrow");
-  const escrowSettlements = escrowInteractions
+  const escrowSettlements = enrichedInteractions
+    .filter((interaction) => interaction.protocolCategory === "escrow")
     .map((interaction) => store.getSettlement(interaction.id))
     .filter(isDefined);
   const escrowCompleted = escrowSettlements.filter((settlement) => settlement.status === "confirmed").length;
-  const escrowCompletionRate =
-    escrowSettlements.length > 0 ? escrowCompleted / escrowSettlements.length : null;
 
-  // Compute staking metrics (if we have staking interactions)
-  const stakingInteractions = enrichedInteractions.filter((i) => i.protocolCategory === "staking");
+  const stakingInteractions = enrichedInteractions.filter((interaction) => interaction.protocolCategory === "staking");
   const stakingSettlements = stakingInteractions
     .map((interaction) => store.getSettlement(interaction.id))
     .filter(isDefined);
-  const stakingMetrics =
-    stakingInteractions.length > 0
-      ? {
-          staked: stakingInteractions.length,
-          slashed: stakingSettlements.filter((settlement) => settlement.status === "failed").length,
-        }
-      : null;
 
   return {
     uniqueProtocols: protocolCounts.size,
     topProtocol: topProtocol ? { name: topProtocol[0], share: topProtocol[1] / enrichedInteractions.length } : null,
     categoryBreakdown,
-    escrowCompletionRate,
-    stakingMetrics,
+    escrowCompletionRate: escrowSettlements.length > 0 ? escrowCompleted / escrowSettlements.length : null,
+    stakingMetrics:
+      stakingInteractions.length > 0
+        ? {
+            staked: stakingInteractions.length,
+            slashed: stakingSettlements.filter((settlement) => settlement.status === "failed").length,
+          }
+        : null,
+  };
+}
+
+function computeSettlementLatencies(store: Store, interactions: InteractionRecord[]) {
+  return interactions
+    .map((interaction) => {
+      const settlement = store.getSettlement(interaction.id);
+      if (!settlement?.tx_hash || settlement.status !== "confirmed") {
+        return null;
+      }
+
+      const baseTx = store.getBaseTransaction(settlement.tx_hash);
+      if (!baseTx) {
+        return null;
+      }
+
+      const created = Date.parse(interaction.created_at);
+      const confirmed = Date.parse(baseTx.created_at);
+      if (!Number.isFinite(created) || !Number.isFinite(confirmed)) {
+        return null;
+      }
+
+      return Math.max(0, (confirmed - created) / 1000);
+    })
+    .filter(isDefined);
+}
+
+function computeAmountSeries(store: Store, interactions: InteractionRecord[]) {
+  return {
+    raw: interactions.map((interaction) => extractAmount(interaction)).filter(isDefined),
+    usd: interactions.map((interaction) => getStoredAmountUSD(store, interaction)).filter(isDefined),
+  };
+}
+
+function computeCounterpartyStats(interactions: InteractionRecord[]) {
+  const counterparties = new Map<string, number>();
+  for (const interaction of interactions) {
+    const key = interaction.counterparty ?? "unknown";
+    counterparties.set(key, (counterparties.get(key) ?? 0) + 1);
+  }
+
+  const entries = Array.from(counterparties.entries()).sort((a, b) => b[1] - a[1]);
+  const top = entries[0];
+
+  return {
+    unique: counterparties.size,
+    top: top ? { id: top[0], share: top[1] / (interactions.length || 1) } : null,
+    repeatRate: interactions.length > 0 ? (interactions.length - counterparties.size) / interactions.length : 0,
   };
 }
 
 export function computeAgentMetrics(store: Store, wallet: string) {
   const interactions = store.listInteractionsByWallet(wallet);
-  const settlements = interactions.map((i) => store.getSettlement(i.id));
-  const evidenceCounts = interactions.map((i) => store.getEvidence(i.id).length);
-  const receiptCounts = interactions.map((i) => store.listReceiptsByInteraction(i.id).length);
+  const settlements = interactions.map((interaction) => store.getSettlement(interaction.id));
+  const evidenceCounts = interactions.map((interaction) => store.getEvidence(interaction.id).length);
+  const receiptCounts = interactions.map((interaction) => store.listReceiptsByInteraction(interaction.id).length);
   const attestationCount = new Set(store.listAttestationsByWallet(wallet).map((row) => row.id)).size;
   const onchain = computeOnchainMetrics(store, wallet);
+  const controls = computeControlsSummary(interactions.map((interaction) => deriveControls(interaction, store.getWalletSnapshot(interaction.id))));
+  const settlementLatency = summarizeSeconds(computeSettlementLatencies(store, interactions));
+  const paymentAmounts = computeAmountSeries(store, interactions);
+  const enrichedInteractions = enrichWithProtocolLabels(interactions, store);
+  const protocolActivity = computeProtocolMetrics(enrichedInteractions, store);
 
-  const controlFacts = interactions.map((i) => deriveControls(i, store.getWalletSnapshot(i.id)));
-  const controls = computeControlsSummary(controlFacts);
-
-  const receiptAvailability = {
-    total: interactions.length,
-    withReceipt: receiptCounts.filter((count) => count > 0).length,
-    rate: interactions.length > 0 ? receiptCounts.filter((count) => count > 0).length / interactions.length : 0,
-  };
-
-  const settlementLatenciesSeconds = interactions
-    .map((interaction) => {
-      const settlement = store.getSettlement(interaction.id);
-      if (!settlement?.tx_hash || settlement.status !== "confirmed") return null;
-      const baseTx = store.getBaseTransaction(settlement.tx_hash);
-      if (!baseTx) return null;
-      const created = Date.parse(interaction.created_at);
-      const confirmed = Date.parse(baseTx.created_at);
-      if (!Number.isFinite(created) || !Number.isFinite(confirmed)) return null;
-      return Math.max(0, (confirmed - created) / 1000);
-    })
-    .filter((value): value is number => value !== null);
-
-  const createdAtSorted = interactions.map((i) => i.created_at).sort();
+  const createdAtSorted = interactions.map((interaction) => interaction.created_at).sort();
   const firstSeen = createdAtSorted[0];
   const lastSeen = createdAtSorted[createdAtSorted.length - 1];
   const ageDays =
@@ -398,127 +485,43 @@ export function computeAgentMetrics(store: Store, wallet: string) {
   }
 
   const dailyCounts = Array.from(buckets.values());
-  const burstiness = coefficientOfVariation(dailyCounts);
-
-  const counterparties = new Map<string, number>();
-  for (const interaction of interactions) {
-    const key = interaction.counterparty ?? "unknown";
-    counterparties.set(key, (counterparties.get(key) ?? 0) + 1);
-  }
-
-  const counterpartyEntries = Array.from(counterparties.entries()).sort((a, b) => b[1] - a[1]);
-  const topCounterparty = counterpartyEntries[0];
-  const totalCounterparty = interactions.length || 1;
-
-  const amounts = interactions
-    .map((interaction) => extractAmount(interaction))
-    .filter((value): value is number => value !== null);
-
-  // SOLVES PROBLEM 1: USD Normalization
-  const amountsUSD = interactions
-    .map((interaction) => {
-      const rawAmount = extractAmount(interaction);
-      if (rawAmount === null) return null;
-
-      const tokenInfo = extractTokenInfo(interaction);
-      if (!tokenInfo) return null;
-      const price = store.getLatestPrice(tokenInfo.address, tokenInfo.chainId);
-      if (!price) return null;
-
-      const priceUSD = Number(price.price_usd);
-      if (!Number.isFinite(priceUSD)) return null;
-
-      return rawAmount * priceUSD;
-    })
-    .filter((value): value is number => value !== null);
-
-  const totalVolumeUSD = amountsUSD.reduce((sum, v) => sum + v, 0);
-
-  // SOLVES PROBLEM 2: Protocol Semantics
-  const enrichedWithProtocols = enrichWithProtocolLabels(interactions, store);
-  const protocolActivity = computeProtocolMetrics(enrichedWithProtocols, store);
-
-  const settlementStats = settlementSuccessRate(settlements);
-
   const evidenceTotal =
-    evidenceCounts.reduce((sum, v) => sum + v, 0) + receiptCounts.reduce((sum, v) => sum + v, 0) + attestationCount;
-  const evidenceDensity = interactions.length > 0 ? evidenceTotal / interactions.length : 0;
+    evidenceCounts.reduce((sum, value) => sum + value, 0) +
+    receiptCounts.reduce((sum, value) => sum + value, 0) +
+    attestationCount;
 
   return {
     wallet,
     lifecycle: { firstSeen, lastSeen, ageDays },
-    throughput: { totalInteractions: interactions.length, dailyCounts, burstiness },
-    counterparty: {
-      unique: counterparties.size,
-      top: topCounterparty ? { id: topCounterparty[0], share: topCounterparty[1] / totalCounterparty } : null,
-      repeatRate: interactions.length > 0 ? (interactions.length - counterparties.size) / interactions.length : 0,
+    throughput: {
+      totalInteractions: interactions.length,
+      dailyCounts,
+      burstiness: coefficientOfVariation(dailyCounts),
     },
-    paymentBehavior: summarizeAmounts(amounts),
-    paymentBehaviorUSD: { ...summarizeAmounts(amountsUSD), totalVolumeUSD },
+    counterparty: computeCounterpartyStats(interactions),
+    paymentBehavior: summarizeAmounts(paymentAmounts.raw),
+    paymentBehaviorUSD: summarizeUsdAmounts(paymentAmounts.usd),
     protocolActivity,
-    settlement: settlementStats,
-    settlementLatency: summarizeSeconds(settlementLatenciesSeconds),
+    settlement: settlementSuccessRate(settlements),
+    settlementLatency,
     controls,
-    receiptAvailability,
-    evidenceDensity,
+    receiptAvailability: {
+      total: interactions.length,
+      withReceipt: receiptCounts.filter((count) => count > 0).length,
+      rate: interactions.length > 0 ? receiptCounts.filter((count) => count > 0).length / interactions.length : 0,
+    },
+    evidenceDensity: interactions.length > 0 ? evidenceTotal / interactions.length : 0,
     onchain,
   };
 }
 
 export function computeCounterpartyMetrics(store: Store, counterparty: string) {
   const interactions = store.listInteractionsByCounterparty(counterparty);
-  const settlements = interactions.map((i) => store.getSettlement(i.id));
-  const controlFacts = interactions.map((i) => deriveControls(i, store.getWalletSnapshot(i.id)));
-  const controls = computeControlsSummary(controlFacts);
-  const receiptCounts = interactions.map((i) => store.listReceiptsByInteraction(i.id).length);
-  const receiptAvailability = {
-    total: interactions.length,
-    withReceipt: receiptCounts.filter((count) => count > 0).length,
-    rate: interactions.length > 0 ? receiptCounts.filter((count) => count > 0).length / interactions.length : 0,
-  };
-
-  const settlementLatenciesSeconds = interactions
-    .map((interaction) => {
-      const settlement = store.getSettlement(interaction.id);
-      if (!settlement?.tx_hash || settlement.status !== "confirmed") return null;
-      const baseTx = store.getBaseTransaction(settlement.tx_hash);
-      if (!baseTx) return null;
-      const created = Date.parse(interaction.created_at);
-      const confirmed = Date.parse(baseTx.created_at);
-      if (!Number.isFinite(created) || !Number.isFinite(confirmed)) return null;
-      return Math.max(0, (confirmed - created) / 1000);
-    })
-    .filter((value): value is number => value !== null);
-
-  const amounts = interactions
-    .map((interaction) => extractAmount(interaction))
-    .filter((value): value is number => value !== null);
-
-  // SOLVES PROBLEM 1: USD Normalization
-  const amountsUSD = interactions
-    .map((interaction) => {
-      const rawAmount = extractAmount(interaction);
-      if (rawAmount === null) return null;
-
-      const tokenInfo = extractTokenInfo(interaction);
-      if (!tokenInfo) return null;
-      const price = store.getLatestPrice(tokenInfo.address, tokenInfo.chainId);
-      if (!price) return null;
-
-      const priceUSD = Number(price.price_usd);
-      if (!Number.isFinite(priceUSD)) return null;
-
-      return rawAmount * priceUSD;
-    })
-    .filter((value): value is number => value !== null);
-
-  const totalVolumeUSD = amountsUSD.reduce((sum, v) => sum + v, 0);
-
-  // SOLVES PROBLEM 2: Protocol Semantics
-  const enrichedWithProtocols = enrichWithProtocolLabels(interactions, store);
-  const protocolActivity = computeProtocolMetrics(enrichedWithProtocols, store);
-
-  const settlementStats = settlementSuccessRate(settlements);
+  const settlements = interactions.map((interaction) => store.getSettlement(interaction.id));
+  const receiptCounts = interactions.map((interaction) => store.listReceiptsByInteraction(interaction.id).length);
+  const paymentAmounts = computeAmountSeries(store, interactions);
+  const enrichedInteractions = enrichWithProtocolLabels(interactions, store);
+  const protocolActivity = computeProtocolMetrics(enrichedInteractions, store);
 
   const wallets = new Map<string, number>();
   for (const interaction of interactions) {
@@ -528,13 +531,22 @@ export function computeCounterpartyMetrics(store: Store, counterparty: string) {
 
   return {
     counterparty,
-    volume: { totalInteractions: interactions.length, uniqueWallets: wallets.size },
-    paymentBehavior: summarizeAmounts(amounts),
-    paymentBehaviorUSD: { ...summarizeAmounts(amountsUSD), totalVolumeUSD },
+    volume: {
+      totalInteractions: interactions.length,
+      uniqueWallets: wallets.size,
+    },
+    paymentBehavior: summarizeAmounts(paymentAmounts.raw),
+    paymentBehaviorUSD: summarizeUsdAmounts(paymentAmounts.usd),
     protocolActivity,
-    fulfillment: settlementStats,
-    settlementLatency: summarizeSeconds(settlementLatenciesSeconds),
-    controls,
-    receiptAvailability,
+    fulfillment: settlementSuccessRate(settlements),
+    settlementLatency: summarizeSeconds(computeSettlementLatencies(store, interactions)),
+    controls: computeControlsSummary(
+      interactions.map((interaction) => deriveControls(interaction, store.getWalletSnapshot(interaction.id))),
+    ),
+    receiptAvailability: {
+      total: interactions.length,
+      withReceipt: receiptCounts.filter((count) => count > 0).length,
+      rate: interactions.length > 0 ? receiptCounts.filter((count) => count > 0).length / interactions.length : 0,
+    },
   };
 }

@@ -36,6 +36,23 @@ describe("HttpClient", () => {
     );
   });
 
+  it("supports custom response parsers for non-JSON callers", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => "plain-text",
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new HttpClient({ baseUrl: "https://api.example.com" });
+    const result = await client.get<string>("/text", {
+      parseResponse: async (response) => response.text(),
+    });
+
+    expect(result).toBe("plain-text");
+  });
+
   it("passes through absolute URLs for callers that need a different host", async () => {
     const fetchMock = vi.fn(async () => okJson({ data: "test" }));
     vi.stubGlobal("fetch", fetchMock);
@@ -205,6 +222,21 @@ describe("HttpClient", () => {
     expect(fetchMock).toHaveBeenCalledTimes(3); // Initial + 2 retries
   });
 
+  it("normalizes non-Error throw values during retries", async () => {
+    const fetchMock = vi.fn(async () => {
+      throw "transport failed";
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new HttpClient({
+      baseUrl: "https://api.example.com",
+      retryConfig: { maxRetries: 0, backoffMs: 10 },
+    });
+
+    await expect(client.get("/test")).rejects.toThrow("transport failed");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("does not cache POST requests", async () => {
     const fetchMock = vi.fn(async () => okJson({ success: true }));
     vi.stubGlobal("fetch", fetchMock);
@@ -249,5 +281,24 @@ describe("HttpClient", () => {
     });
 
     await expect(client.get("/test")).rejects.toThrow("network-down");
+  });
+
+  it("supports custom response parsing", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response("plain-text", {
+          status: 200,
+          headers: { "content-type": "text/plain" },
+        }),
+      ),
+    );
+
+    const client = new HttpClient({ baseUrl: "https://api.example.com" });
+    await expect(
+      client.get("/text", {
+        parseResponse: async (response) => response.text(),
+      }),
+    ).resolves.toBe("plain-text");
   });
 });

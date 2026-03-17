@@ -17,6 +17,7 @@ export interface RequestOptions {
   cacheTTL?: number; // Cache TTL in seconds (only for GET requests)
   skipCache?: boolean; // Force skip cache
   skipRateLimit?: boolean; // Skip rate limiting (use carefully)
+  parseResponse?: (response: Response) => Promise<unknown>;
 }
 
 /**
@@ -121,7 +122,7 @@ export class HttpClient {
         }
 
         // Parse JSON response
-        const data = await response.json();
+        const data = options?.parseResponse ? await options.parseResponse(response) : await response.json();
         return data as T;
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));

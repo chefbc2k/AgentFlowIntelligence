@@ -8,10 +8,14 @@ type InteractionRow = {
   counterparty?: string;
   service?: string;
   protocol: string;
+  amountUSD?: number | null;
+  protocolName?: string;
+  protocolCategory?: string;
 };
 
 type InteractionDetail = {
   interaction: InteractionRow;
+  amountUSD?: number | null;
   x402?: {
     challenge: { present: boolean; decoded?: { amount?: string; asset?: string; network?: string; payTo?: string } };
     authorization: { hasSignature: boolean; decoded?: { payer?: string; network?: string } };
@@ -53,6 +57,14 @@ type AgentMetrics = {
   throughput: { totalInteractions: number; dailyCounts: number[]; burstiness: number };
   counterparty: { unique: number; top: { id: string; share: number } | null; repeatRate: number };
   paymentBehavior: { count: number; avg: number; min: number; max: number; median: number };
+  paymentBehaviorUSD: { count: number; avg: number; min: number; max: number; median: number; totalVolumeUSD: number };
+  protocolActivity: {
+    uniqueProtocols: number;
+    topProtocol: { name: string; share: number } | null;
+    categoryBreakdown: Record<string, number>;
+    escrowCompletionRate: number | null;
+    stakingMetrics: { staked: number; slashed: number } | null;
+  };
   settlement: { total: number; successRate: number };
   settlementLatency: { total: number; avgSeconds: number; minSeconds: number; maxSeconds: number; medianSeconds: number };
   controls: {
@@ -76,8 +88,16 @@ type AgentMetrics = {
       total: number;
       inbound: number;
       outbound: number;
+      inboundVolumeUSD: number;
+      outboundVolumeUSD: number;
+      totalVolumeUSD: number;
       uniqueTokens: number;
       topToken: { symbol: string; share: number } | null;
+    };
+    protocols: {
+      unique: number;
+      topProtocol: { name: string; share: number } | null;
+      categoryBreakdown: Record<string, number>;
     };
   };
 };
@@ -86,6 +106,14 @@ type CounterpartyMetrics = {
   counterparty: string;
   volume: { totalInteractions: number; uniqueWallets: number };
   paymentBehavior: { count: number; avg: number; min: number; max: number; median: number };
+  paymentBehaviorUSD: { count: number; avg: number; min: number; max: number; median: number; totalVolumeUSD: number };
+  protocolActivity: {
+    uniqueProtocols: number;
+    topProtocol: { name: string; share: number } | null;
+    categoryBreakdown: Record<string, number>;
+    escrowCompletionRate: number | null;
+    stakingMetrics: { staked: number; slashed: number } | null;
+  };
   fulfillment: { total: number; successRate: number };
   settlementLatency: { total: number; avgSeconds: number; minSeconds: number; maxSeconds: number; medianSeconds: number };
   controls: {
@@ -140,7 +168,12 @@ export function App() {
     for (const interaction of interactions) {
       const left = interaction.wallet_address ?? "unknown";
       const counterpartyLabel = interaction.counterparty ?? "unknown";
-      const key = interaction.service ? `${left}→${counterpartyLabel}→${interaction.service}` : `${left}→${counterpartyLabel}`;
+      const serviceLabel = interaction.protocolName
+        ? interaction.service
+          ? `${interaction.protocolName} ${interaction.service}`
+          : interaction.protocolName
+        : interaction.service;
+      const key = serviceLabel ? `${left}→${counterpartyLabel}→${serviceLabel}` : `${left}→${counterpartyLabel}`;
       map.set(key, (map.get(key) ?? 0) + 1);
     }
     return Array.from(map.entries()).map(([key, count]) => ({ nodes: key.split("→"), count }));
@@ -217,6 +250,14 @@ export function App() {
                 <strong>{(agentMetrics.settlement.successRate * 100).toFixed(0)}%</strong>
               </div>
               <div>
+                <span>Total USD volume</span>
+                <strong>{(agentMetrics.paymentBehaviorUSD?.totalVolumeUSD ?? 0).toFixed(2)}</strong>
+              </div>
+              <div>
+                <span>Top protocol</span>
+                <strong>{agentMetrics.protocolActivity?.topProtocol?.name ?? "—"}</strong>
+              </div>
+              <div>
                 <span>Approval rate</span>
                 <strong>{(agentMetrics.controls.approvals.rate * 100).toFixed(0)}%</strong>
               </div>
@@ -258,6 +299,14 @@ export function App() {
                     <span>Top token</span>
                     <strong>{agentMetrics.onchain.tokenTransfers.topToken?.symbol ?? "—"}</strong>
                   </div>
+                  <div>
+                    <span>Onchain USD volume</span>
+                    <strong>{(agentMetrics.onchain.tokenTransfers.totalVolumeUSD ?? 0).toFixed(2)}</strong>
+                  </div>
+                  <div>
+                    <span>Onchain protocols</span>
+                    <strong>{agentMetrics.onchain.protocols?.unique ?? 0}</strong>
+                  </div>
                 </>
               )}
             </div>
@@ -288,6 +337,14 @@ export function App() {
               <div>
                 <span>Avg payment</span>
                 <strong>{counterpartyMetrics.paymentBehavior.avg.toFixed(2)}</strong>
+              </div>
+              <div>
+                <span>Total USD volume</span>
+                <strong>{(counterpartyMetrics.paymentBehaviorUSD?.totalVolumeUSD ?? 0).toFixed(2)}</strong>
+              </div>
+              <div>
+                <span>Top protocol</span>
+                <strong>{counterpartyMetrics.protocolActivity?.topProtocol?.name ?? "—"}</strong>
               </div>
               <div>
                 <span>Success rate</span>
@@ -366,10 +423,16 @@ export function App() {
                   <div>
                     <span>Amount</span>
                     <strong>
-                      {selected.controls?.amount === null || selected.controls?.amount === undefined
-                        ? "—"
-                        : `${selected.controls.amount}${selected.controls.currency ? ` ${selected.controls.currency}` : ""}`}
+                      {selected.amountUSD !== null && selected.amountUSD !== undefined
+                        ? `${selected.amountUSD.toFixed(2)} USD`
+                        : selected.controls?.amount === null || selected.controls?.amount === undefined
+                          ? "—"
+                          : `${selected.controls.amount}${selected.controls.currency ? ` ${selected.controls.currency}` : ""}`}
                     </strong>
+                  </div>
+                  <div>
+                    <span>Protocol</span>
+                    <strong>{selected.interaction.protocolName ?? "—"}</strong>
                   </div>
                   <div>
                     <span>Controls</span>

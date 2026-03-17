@@ -322,6 +322,7 @@ describe("DuneClient", () => {
         toAddress: "0xto",
         amountUSD: 42,
         contractAddress: "0xcontract",
+        chainId: 10,
       },
     ]);
 
@@ -330,7 +331,7 @@ describe("DuneClient", () => {
       expect.objectContaining({
         txHash: "0xescrow",
         category: "escrow",
-        chainId: 8453,
+        chainId: 10,
       }),
     ]);
   });

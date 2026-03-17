@@ -166,8 +166,8 @@ export interface ReceiptRecord {
 
 export interface PriceRecord {
   id: string;
-  token_address?: string;
-  chain_id?: number;
+  token_address: string;
+  chain_id: number;
   symbol?: string;
   price_usd: string;
   source: "coingecko" | "defillama";
@@ -178,7 +178,7 @@ export interface PriceRecord {
 export interface ProtocolLabelRecord {
   id: string;
   contract_address: string;
-  chain_id?: number;
+  chain_id: number;
   protocol_name?: string;
   protocol_category?: "dex" | "bridge" | "escrow" | "lending" | "staking" | "other";
   source: "dune" | "graph" | "defillama";

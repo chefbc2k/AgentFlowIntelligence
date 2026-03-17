@@ -98,7 +98,7 @@ export class JobScheduler {
    * SOLVES PROBLEM 1: USD Normalization
    */
   private async refreshPrices(): Promise<void> {
-    const tokens = PricingService.getCommonTokens();
+    const tokens = dedupeTokens([...PricingService.getCommonTokens(), ...this.store.listObservedTokens()]);
     console.log(`[JobScheduler] Refreshing prices for ${tokens.length} tokens`);
 
     let successCount = 0;
@@ -218,4 +218,21 @@ export class JobScheduler {
 
     return "other";
   }
+}
+
+function dedupeTokens(tokens: Array<{ address: string; chainId: number; symbol?: string }>) {
+  const unique = new Map<string, { address: string; chainId: number; symbol?: string }>();
+
+  for (const token of tokens) {
+    const address = token.address.toLowerCase();
+    const key = `${token.chainId}:${address}`;
+    const existing = unique.get(key);
+    unique.set(key, {
+      address,
+      chainId: token.chainId,
+      symbol: existing?.symbol ?? token.symbol,
+    });
+  }
+
+  return Array.from(unique.values());
 }

@@ -233,6 +233,58 @@ describe("server api logic", () => {
     expect(api.getInteraction("missing").status).toBe(404);
   });
 
+  it("returns enriched interaction rows from the list read model", () => {
+    const store = createTestStore();
+    store.upsertInteraction({
+      id: "listed-1",
+      created_at: "2024-01-01T00:00:00Z",
+      wallet_address: "0xwallet",
+      counterparty: "0xcontract",
+      protocol: "x402",
+      summary: {
+        paymentRequired: {
+          amount: "2",
+          asset: "0xtoken",
+          network: 8453,
+        },
+      },
+    });
+    store.upsertPrice({
+      id: "8453:0xtoken",
+      token_address: "0xtoken",
+      chain_id: 8453,
+      symbol: "TOK",
+      price_usd: "1.5",
+      source: "coingecko",
+      timestamp: "2024-01-01T00:00:00Z",
+      raw: {},
+    });
+    store.upsertProtocolLabel({
+      id: "8453:0xcontract",
+      contract_address: "0xcontract",
+      chain_id: 8453,
+      protocol_name: "EscrowX",
+      protocol_category: "escrow",
+      source: "dune",
+      metadata: {},
+      created_at: "2024-01-01T00:00:00Z",
+    });
+
+    const api = createApi({
+      config: createTestConfig(),
+      store,
+    });
+
+    expect(api.listInteractions().body).toEqual([
+      expect.objectContaining({
+        id: "listed-1",
+        amountUSD: 3,
+        protocolName: "EscrowX",
+        protocolCategory: "escrow",
+      }),
+    ]);
+  });
+
   it("ingests x402 interactions, including peac receipt and base enrichment", async () => {
     stubFetchForHappyPath();
     const store = createTestStore();
@@ -386,6 +438,64 @@ describe("server api logic", () => {
     expect(
       (detail.body as { interaction: { protocolName?: string; protocolCategory?: string } }).interaction,
     ).toEqual(expect.objectContaining({ protocolName: "EscrowX", protocolCategory: "escrow" }));
+  });
+
+  it("falls back to Base chain pricing only when the asset is present and keeps invalid prices null", () => {
+    const store = createTestStore();
+    store.upsertInteraction({
+      id: "i-enriched-fallback",
+      created_at: "2024-01-01T00:00:00Z",
+      counterparty: "0xcontract",
+      protocol: "x402",
+      summary: {
+        paymentRequired: {
+          amount: "2",
+          asset: "0xtoken",
+          network: "base",
+        },
+      },
+    });
+    store.upsertSettlement({
+      id: "i-enriched-fallback:settlement",
+      interaction_id: "i-enriched-fallback",
+      tx_hash: "0xtx",
+      status: "confirmed",
+      metadata: {},
+    });
+    store.upsertPrice({
+      id: "8453:0xtoken",
+      token_address: "0xtoken",
+      chain_id: 8453,
+      symbol: "TOK",
+      price_usd: "not-a-number",
+      source: "coingecko",
+      timestamp: "2024-01-01T00:00:00Z",
+      raw: {},
+    });
+    store.upsertAttestations([
+      {
+        id: "att-by-tx",
+        attester: "0xattester",
+        recipient: "0xrecipient",
+        schema_id: "schema",
+        tx_hash: "0xtx",
+        chain_id: 8453,
+        raw: {},
+        created_at: "2024-01-01T00:00:00Z",
+      },
+    ]);
+
+    const api = createApi({
+      config: createTestConfig(),
+      store,
+    });
+
+    const detail = api.getInteractionEnriched("i-enriched-fallback");
+    expect(detail.status).toBe(200);
+    expect((detail.body as { amountUSD: number | null }).amountUSD).toBeNull();
+    expect((detail.body as { attestations: Array<{ id: string }> }).attestations).toEqual([
+      expect.objectContaining({ id: "att-by-tx" }),
+    ]);
   });
 
   it("returns x402 packet sections for challenge-only then full handshake ingestion", async () => {
@@ -834,7 +944,7 @@ describe("server api logic", () => {
 
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
-    createApp({ config: createTestConfig(), store });
+    createApp({ config: createTestConfig({ duneApiKey: "test-key" }), store });
 
     process.emit("SIGTERM");
     process.emit("SIGINT");
@@ -842,5 +952,131 @@ describe("server api logic", () => {
     expect(logSpy).toHaveBeenCalledWith("SIGTERM received, stopping background jobs");
     expect(logSpy).toHaveBeenCalledWith("SIGINT received, stopping background jobs");
     expect(exitSpy).toHaveBeenCalledWith(0);
+  });
+
+  it("lists interactions through the enriched read model callback", () => {
+    const store = createTestStore();
+    store.upsertInteraction({
+      id: "list-1",
+      created_at: "2024-01-01T00:00:00Z",
+      wallet_address: "0xwallet",
+      counterparty: "svc",
+      service: "/quote",
+      protocol: "x402",
+      summary: { paymentRequired: { amount: "1", asset: "0xtoken", network: 8453 } },
+    });
+    store.upsertPrice({
+      id: "list-price-1",
+      token_address: "0xtoken",
+      chain_id: 8453,
+      symbol: "TOK",
+      price_usd: "5",
+      source: "coingecko",
+      timestamp: "2024-01-01T00:00:00Z",
+      raw: {},
+    });
+
+    const result = createApi({ config: createTestConfig(), store }).listInteractions();
+
+    expect(result.status).toBe(200);
+    expect(result.body).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "list-1",
+          amountUSD: 5,
+          service: "/quote",
+        }),
+      ]),
+    );
+  });
+
+  it("parses string chain ids in enriched interactions and falls back when wallet attestations are absent", () => {
+    const store = createTestStore();
+    store.upsertInteraction({
+      id: "priced-2",
+      created_at: "2024-01-01T00:00:00Z",
+      counterparty: "svc",
+      service: "/quote",
+      protocol: "x402",
+      summary: { paymentRequired: { amount: "2", asset: "0xtoken", network: "8453" } },
+    });
+    store.upsertSettlement({
+      id: "priced-2:settlement",
+      interaction_id: "priced-2",
+      tx_hash: "0xtx",
+      status: "confirmed",
+      metadata: {},
+    });
+    store.upsertPrice({
+      id: "price-2",
+      token_address: "0xtoken",
+      chain_id: 8453,
+      symbol: "TOK",
+      price_usd: "4",
+      source: "coingecko",
+      timestamp: "2024-01-01T00:00:00Z",
+      raw: {},
+    });
+    store.upsertAttestations([
+      {
+        id: "att-tx",
+        tx_hash: "0xtx",
+        raw: {},
+        created_at: "2024-01-01T00:00:00Z",
+      },
+    ]);
+
+    const api = createApi({ config: createTestConfig(), store });
+    const enriched = api.getInteractionEnriched("priced-2");
+
+    expect(enriched.status).toBe(200);
+    expect((enriched.body as { amountUSD: number }).amountUSD).toBe(8);
+    expect((enriched.body as { attestations: unknown[] }).attestations).toHaveLength(1);
+  });
+
+  it("leaves enriched USD empty when payment fields are malformed or missing price data", () => {
+    const store = createTestStore();
+    store.upsertInteraction({
+      id: "priced-bad-amount",
+      created_at: "2024-01-01T00:00:00Z",
+      protocol: "x402",
+      summary: { paymentRequired: { amount: 2, asset: "0xtoken", network: "oops" } },
+    });
+    store.upsertInteraction({
+      id: "priced-no-price",
+      created_at: "2024-01-01T00:00:00Z",
+      protocol: "x402",
+      summary: { paymentRequired: { amount: "2", asset: "0xtoken" } },
+    });
+
+    expect((createApi({ config: createTestConfig(), store }).getInteractionEnriched("priced-bad-amount").body as { amountUSD: null }).amountUSD).toBeNull();
+    expect((createApi({ config: createTestConfig(), store }).getInteractionEnriched("priced-no-price").body as { amountUSD: null }).amountUSD).toBeNull();
+  });
+
+  it("applies the read-model enrichment when listing interactions", () => {
+    const store = createTestStore();
+    store.upsertInteraction({
+      id: "list-1",
+      created_at: "2024-01-01T00:00:00Z",
+      wallet_address: "0xwallet",
+      counterparty: "svc",
+      service: "/quote",
+      protocol: "x402",
+      summary: { paymentRequired: { amount: "2", asset: "0xtoken", network: 8453 } },
+    });
+    store.upsertPrice({
+      id: "price-list-1",
+      token_address: "0xtoken",
+      chain_id: 8453,
+      symbol: "TOK",
+      price_usd: "2",
+      source: "coingecko",
+      timestamp: "2024-01-01T00:00:00Z",
+      raw: {},
+    });
+
+    const result = createApi({ config: createTestConfig(), store }).listInteractions();
+    expect(result.status).toBe(200);
+    expect((result.body as Array<{ amountUSD: number }>)[0]?.amountUSD).toBe(4);
   });
 });
