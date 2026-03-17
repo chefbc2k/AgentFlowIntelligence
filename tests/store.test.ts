@@ -418,4 +418,86 @@ describe("store", () => {
 
     expect(migratedStore.getInteraction("i-migrated")?.service).toBe("/quote");
   });
+
+  it("round-trips prices and protocol labels", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "afi-store-enrichment-"));
+    const store = new Store({ dbPath: ":memory:", dataDir });
+
+    store.upsertPrice({
+      id: "8453:0xtoken",
+      token_address: "0xtoken",
+      chain_id: 8453,
+      symbol: "USDC",
+      price_usd: "1.01",
+      source: "coingecko",
+      timestamp: "2024-01-01T00:00:00Z",
+      raw: { source: "test" },
+    });
+
+    store.upsertProtocolLabel({
+      id: "8453:0xcontract",
+      contract_address: "0xcontract",
+      chain_id: 8453,
+      protocol_name: "EscrowX",
+      protocol_category: "escrow",
+      source: "dune",
+      metadata: { txHash: "0xtx" },
+      created_at: "2024-01-01T00:00:00Z",
+    });
+    store.upsertProtocolLabel({
+      id: "8453:0xcontract-null",
+      contract_address: "0xcontract-null",
+      chain_id: 8453,
+      protocol_name: undefined,
+      protocol_category: undefined,
+      source: "dune",
+      metadata: {},
+      created_at: "2024-01-01T00:00:00Z",
+    });
+
+    expect(store.getLatestPrice("0xTOKEN", 8453)).toEqual(
+      expect.objectContaining({
+        symbol: "USDC",
+        price_usd: "1.01",
+      }),
+    );
+
+    expect(store.getProtocolLabel("0xCONTRACT", 8453)).toEqual(
+      expect.objectContaining({
+        protocol_name: "EscrowX",
+        protocol_category: "escrow",
+      }),
+    );
+    expect(store.getProtocolLabel("0xcontract-null", 8453)).toEqual(
+      expect.objectContaining({
+        protocol_name: undefined,
+        protocol_category: undefined,
+      }),
+    );
+
+    expect(store.getLatestPrice("0xmissing", 8453)).toBeUndefined();
+    expect(store.getProtocolLabel("0xmissing", 8453)).toBeUndefined();
+  });
+
+  it("lists only active wallets within the requested window", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "afi-store-active-"));
+    const store = new Store({ dbPath: ":memory:", dataDir });
+
+    store.upsertInteraction({
+      id: "recent",
+      created_at: new Date().toISOString(),
+      wallet_address: "0xactive",
+      protocol: "x402",
+      summary: {},
+    });
+    store.upsertInteraction({
+      id: "old",
+      created_at: "2020-01-01T00:00:00Z",
+      wallet_address: "0xold",
+      protocol: "x402",
+      summary: {},
+    });
+
+    expect(store.getActiveWallets(7)).toEqual(["0xactive"]);
+  });
 });

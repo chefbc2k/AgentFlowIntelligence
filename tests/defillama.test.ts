@@ -98,6 +98,14 @@ describe("DefiLlamaClient", () => {
     expect(prices["base:0xvalid"].price).toBe(1.5);
   });
 
+  it("returns an empty object when the price API omits the coins map", async () => {
+    const fetchMock = vi.fn(async () => okJson({}));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new DefiLlamaClient();
+    await expect(client.getCurrentPrices(["base:0xvalid"])).resolves.toEqual({});
+  });
+
   it("fetches protocol metadata", async () => {
     const fetchMock = vi.fn(async (input: string) => {
       const url = new URL(input);
@@ -160,6 +168,27 @@ describe("DefiLlamaClient", () => {
     expect(chainMetrics?.tokenSymbol).toBe("ETH");
   });
 
+  it("returns null when chain TVL lookup fails", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => notOk(500)));
+
+    const client = new DefiLlamaClient();
+    const metricsPromise = client.getChainTVL("base");
+    await vi.runAllTimersAsync();
+
+    expect(await metricsPromise).toBeNull();
+  });
+
+  it("returns null when chain TVL transport throws", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      throw new Error("network");
+    }));
+
+    const client = new DefiLlamaClient();
+    const metricsPromise = client.getChainTVL("base");
+    await vi.runAllTimersAsync();
+    expect(await metricsPromise).toBeNull();
+  });
+
   it("lists all protocols", async () => {
     const fetchMock = vi.fn(async (input: string) => {
       const url = new URL(input);
@@ -180,6 +209,14 @@ describe("DefiLlamaClient", () => {
     expect(protocols).toHaveLength(2);
     expect(protocols[0].name).toBe("Uniswap");
     expect(protocols[1].name).toBe("Aave");
+  });
+
+  it("returns an empty array when protocol list payload is nullish", async () => {
+    const fetchMock = vi.fn(async () => okJson(null));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new DefiLlamaClient();
+    await expect(client.listProtocols()).resolves.toEqual([]);
   });
 
   it("builds protocol category mapping", async () => {

@@ -5,6 +5,7 @@ export default defineConfig({
     include: ["tests/ui/**/*.test.tsx"],
     environment: "jsdom",
     setupFiles: ["./tests/ui/setup.ts"],
+    pool: "forks",
     coverage: {
       provider: "v8",
       reporter: ["text"],

@@ -192,4 +192,175 @@ describe("JobScheduler", () => {
 
     consoleSpy.mockRestore();
   });
+
+  it("refreshes protocol labels for active wallets and categorizes protocol families", async () => {
+    const upsertProtocolLabel = vi.fn();
+    const store = {
+      getActiveWallets: () => ["0xwallet"],
+      upsertProtocolLabel,
+    } as unknown as Store;
+    const duneClient = {
+      getProtocolActivity: vi.fn(async () => [
+        { contractAddress: "0xdex", protocolName: "Dex", category: "swap", chainId: 8453 },
+        { contractAddress: "0xbridge", protocolName: "Bridge", category: "bridge", chainId: 8453 },
+        { contractAddress: "0xescrow", protocolName: "Escrow", category: "escrow", chainId: 8453 },
+        { contractAddress: "0xlend", protocolName: "Lend", category: "borrow", chainId: 8453 },
+        { contractAddress: "0xstake", protocolName: "Stake", category: "staking", chainId: 8453 },
+        { contractAddress: "0xother", protocolName: "Other", category: undefined, chainId: 8453 },
+        { contractAddress: undefined, protocolName: "Skip", category: "swap", chainId: 8453 },
+      ]),
+    } as unknown as DuneClient;
+
+    scheduler = new JobScheduler({
+      config: createConfig(),
+      store,
+      pricingService: {} as PricingService,
+      duneClient,
+    });
+
+    await (scheduler as unknown as { refreshProtocolLabels: () => Promise<void> }).refreshProtocolLabels();
+
+    expect(upsertProtocolLabel).toHaveBeenCalledTimes(6);
+    expect(upsertProtocolLabel.mock.calls.map(([row]) => row.protocol_category)).toEqual([
+      "dex",
+      "bridge",
+      "escrow",
+      "lending",
+      "staking",
+      "other",
+    ]);
+  });
+
+  it("skips direct protocol refresh when no wallets are active or no dune client exists", async () => {
+    const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    scheduler = new JobScheduler({
+      config: createConfig(),
+      store: { getActiveWallets: () => [] } as unknown as Store,
+      pricingService: {} as PricingService,
+      duneClient: {
+        getProtocolActivity: vi.fn(async () => []),
+      } as unknown as DuneClient,
+    });
+    await (scheduler as unknown as { refreshProtocolLabels: () => Promise<void> }).refreshProtocolLabels();
+
+    const noDuneScheduler = new JobScheduler({
+      config: createConfig(),
+      store: { getActiveWallets: () => ["0xwallet"] } as unknown as Store,
+      pricingService: {} as PricingService,
+    });
+    await (noDuneScheduler as unknown as { refreshProtocolLabels: () => Promise<void> }).refreshProtocolLabels();
+
+    expect(consoleSpy).toHaveBeenCalledWith(
+      "[JobScheduler] No active wallets found, skipping protocol label refresh",
+    );
+
+    consoleSpy.mockRestore();
+  });
+
+  it("continues price and protocol refresh loops when individual calls fail", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const store = {
+      upsertPrice: vi.fn(),
+      getActiveWallets: () => ["0xwallet"],
+      upsertProtocolLabel: vi.fn(),
+    } as unknown as Store;
+    const pricingService = {
+      getPriceUSD: vi
+        .fn()
+        .mockResolvedValueOnce(1)
+        .mockResolvedValueOnce(null)
+        .mockRejectedValueOnce(new Error("boom"))
+        .mockResolvedValueOnce(2),
+    } as unknown as PricingService;
+    const duneClient = {
+      getProtocolActivity: vi.fn(async () => {
+        throw new Error("dune boom");
+      }),
+    } as unknown as DuneClient;
+
+    scheduler = new JobScheduler({
+      config: createConfig(),
+      store,
+      pricingService,
+      duneClient,
+    });
+
+    await (scheduler as unknown as { refreshPrices: () => Promise<void> }).refreshPrices();
+    await (scheduler as unknown as { refreshProtocolLabels: () => Promise<void> }).refreshProtocolLabels();
+
+    expect(warnSpy).toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalled();
+
+    warnSpy.mockRestore();
+    errorSpy.mockRestore();
+  });
+
+  it("categorizes protocol labels across all supported buckets and ignores incomplete events", async () => {
+    const store = new Store({ dbPath: ":memory:", dataDir: "./data" });
+    store.upsertInteraction({
+      id: "active-wallet",
+      created_at: new Date().toISOString(),
+      wallet_address: "0xwallet",
+      protocol: "x402",
+      summary: {},
+    });
+
+    scheduler = new JobScheduler({
+      config: createConfig({ duneApiKey: "test-key" }),
+      store,
+      pricingService: { getPriceUSD: vi.fn() } as unknown as PricingService,
+      duneClient: {
+        getProtocolActivity: vi.fn(async () => [
+          { contractAddress: "0xdex", protocolName: "Uni", category: "DEX" },
+          { contractAddress: "0xbridge", protocolName: "BridgeX", category: "Bridge" },
+          { contractAddress: "0xescrow", protocolName: "EscrowX", category: "Escrow" },
+          { contractAddress: "0xlend", protocolName: "LendX", category: "Borrow" },
+          { contractAddress: "0xstake", protocolName: "StakeX", category: "Staking" },
+          { contractAddress: "0xother", protocolName: "OtherX", category: "Unknown" },
+          { contractAddress: "0xskip", protocolName: undefined, category: "DEX" },
+          { contractAddress: undefined, protocolName: "SkipX", category: "DEX" },
+        ]),
+      } as unknown as DuneClient,
+    });
+
+    await (scheduler as unknown as { refreshProtocolLabels: () => Promise<void> }).refreshProtocolLabels();
+
+    expect(store.getProtocolLabel("0xdex", 8453)?.protocol_category).toBe("dex");
+    expect(store.getProtocolLabel("0xbridge", 8453)?.protocol_category).toBe("bridge");
+    expect(store.getProtocolLabel("0xescrow", 8453)?.protocol_category).toBe("escrow");
+    expect(store.getProtocolLabel("0xlend", 8453)?.protocol_category).toBe("lending");
+    expect(store.getProtocolLabel("0xstake", 8453)?.protocol_category).toBe("staking");
+    expect(store.getProtocolLabel("0xother", 8453)?.protocol_category).toBe("other");
+    expect(store.getProtocolLabel("0xskip", 8453)).toBeUndefined();
+  });
+
+  it("logs scheduled protocol job failures", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+
+    scheduler = new JobScheduler({
+      config: createConfig({ duneApiKey: "test-key" }),
+      store: new Store({ dbPath: ":memory:", dataDir: "./data" }),
+      pricingService: { getPriceUSD: vi.fn(async () => 1) } as unknown as PricingService,
+      duneClient: { getProtocolActivity: vi.fn(async () => []) } as unknown as DuneClient,
+    });
+
+    vi.spyOn(scheduler as unknown as { refreshProtocolLabels: () => Promise<void> }, "refreshProtocolLabels")
+      .mockResolvedValueOnce()
+      .mockRejectedValueOnce(new Error("scheduled protocol failure"));
+
+    scheduler.start();
+    await vi.runOnlyPendingTimersAsync();
+    await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      "[JobScheduler] Job protocol-labels failed:",
+      expect.any(Error),
+    );
+  });
+
 });

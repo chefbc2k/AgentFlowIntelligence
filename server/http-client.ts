@@ -55,7 +55,7 @@ export class HttpClient {
     }
 
     // Execute request with retries
-    const response = await this.executeWithRetry("GET", path, undefined, options);
+    const response = await this.executeWithRetry<T>("GET", path, undefined, options);
 
     // Cache successful response (if TTL provided)
     if (this.cache && options?.cacheTTL && response) {
@@ -73,7 +73,7 @@ export class HttpClient {
     body?: unknown,
     options?: RequestOptions,
   ): Promise<T> {
-    return this.executeWithRetry("POST", path, body, options);
+    return this.executeWithRetry<T>("POST", path, body, options);
   }
 
   /**
@@ -85,7 +85,7 @@ export class HttpClient {
     body?: unknown,
     options?: RequestOptions,
   ): Promise<T> {
-    let lastError: Error | undefined;
+    let lastError = new Error("Request failed after retries");
 
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
       try {
@@ -124,7 +124,7 @@ export class HttpClient {
         const data = await response.json();
         return data as T;
       } catch (error) {
-        lastError = error as Error;
+        lastError = error instanceof Error ? error : new Error(String(error));
 
         // Don't retry on last attempt
         if (attempt === this.maxRetries) {
@@ -137,10 +137,10 @@ export class HttpClient {
       }
     }
 
-    throw lastError || new Error("Request failed after retries");
+    throw lastError;
   }
 
-  private sleep(ms: number): Promise<void> {
+  protected sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 

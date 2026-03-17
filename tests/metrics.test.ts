@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeAgentMetrics, computeCounterpartyMetrics } from "../server/metrics";
+import { computeAgentMetrics, computeCounterpartyMetrics, enrichWithPricing } from "../server/metrics";
 
 describe("metrics", () => {
   it("handles empty stores", () => {
@@ -15,8 +15,6 @@ describe("metrics", () => {
       listAttestationsByWallet: () => [],
       listInteractionsByCounterparty: () => [],
       listWalletsByCounterparty: () => [],
-      getLatestPrice: () => null,
-      getProtocolLabel: () => null,
       getLatestPrice: () => null,
       getProtocolLabel: () => null,
     } as const;
@@ -54,7 +52,13 @@ describe("metrics", () => {
         wallet_address: "0xabc",
         counterparty: "svc",
         protocol: "x402" as const,
-        summary: { paymentRequired: { amount: "2" } },
+        summary: {
+          paymentRequired: {
+            amount: "2",
+            asset: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+            network: 8453,
+          },
+        },
       },
       {
         id: "i3",
@@ -72,7 +76,14 @@ describe("metrics", () => {
         wallet_address: "0xabc",
         counterparty: "svc",
         protocol: "x402" as const,
-        summary: { locusTx: { amount: "3" } },
+        summary: {
+          locusTx: { amount: "3" },
+          paymentRequired: {
+            amount: "3",
+            asset: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+            network: 8453,
+          },
+        },
       },
       {
         id: "i5",
@@ -187,10 +198,43 @@ describe("metrics", () => {
       listAttestationsByWallet: () => [],
       listInteractionsByCounterparty: () => [],
       listWalletsByCounterparty: () => [],
-      getLatestPrice: () => null,
-      getProtocolLabel: () => null,
-      getLatestPrice: () => null,
-      getProtocolLabel: () => null,
+      getLatestPrice: (tokenAddress: string, chainId: number) =>
+        tokenAddress.toLowerCase() === "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913" && chainId === 8453
+          ? {
+              id: "price-usdc",
+              token_address: tokenAddress,
+              chain_id: chainId,
+              symbol: "USDC",
+              price_usd: "1.0",
+              source: "coingecko" as const,
+              timestamp: "2024-01-01T00:00:00Z",
+              raw: {},
+            }
+          : null,
+      getProtocolLabel: (contractAddress: string) =>
+        contractAddress === "svc"
+          ? {
+              id: "svc",
+              contract_address: contractAddress,
+              chain_id: 8453,
+              protocol_name: "EscrowX",
+              protocol_category: "escrow" as const,
+              source: "dune" as const,
+              metadata: {},
+              created_at: "2024-01-01T00:00:00Z",
+            }
+          : contractAddress === "other"
+            ? {
+                id: "other",
+                contract_address: contractAddress,
+                chain_id: 8453,
+                protocol_name: "StakeHub",
+                protocol_category: "staking" as const,
+                source: "dune" as const,
+                metadata: {},
+                created_at: "2024-01-01T00:00:00Z",
+              }
+            : null,
     } as const;
     const metrics = computeAgentMetrics(store as unknown as import("../server/store").Store, "0xabc");
     expect(metrics.throughput.totalInteractions).toBe(5);
@@ -198,7 +242,13 @@ describe("metrics", () => {
     expect(metrics.counterparty.top?.id).toBe("svc");
     expect(metrics.paymentBehavior.count).toBe(3);
     expect(metrics.paymentBehavior.median).toBe(2);
+    expect(metrics.paymentBehaviorUSD.count).toBe(2);
+    expect(metrics.paymentBehaviorUSD.totalVolumeUSD).toBe(5);
     expect(metrics.settlement.successRate).toBeCloseTo(3 / 4);
+    expect(metrics.protocolActivity.uniqueProtocols).toBe(2);
+    expect(metrics.protocolActivity.topProtocol?.name).toBe("EscrowX");
+    expect(metrics.protocolActivity.escrowCompletionRate).toBeCloseTo(2 / 3);
+    expect(metrics.protocolActivity.stakingMetrics).toEqual({ staked: 1, slashed: 0 });
     expect(metrics.controls.approvals.required).toBe(1);
     expect(metrics.controls.allowance.overLimit).toBe(1);
     expect(metrics.controls.maxTx.overLimit).toBe(1);
@@ -263,8 +313,6 @@ describe("metrics", () => {
       listWalletsByCounterparty: () => [],
       getLatestPrice: () => null,
       getProtocolLabel: () => null,
-      getLatestPrice: () => null,
-      getProtocolLabel: () => null,
     } as const;
 
     const metrics = computeAgentMetrics(store as unknown as import("../server/store").Store, "0xabc");
@@ -324,7 +372,13 @@ describe("metrics", () => {
         wallet_address: "0xabc",
         counterparty: "svc",
         protocol: "x402" as const,
-        summary: { paymentRequired: { amount: "1" } },
+        summary: {
+          paymentRequired: {
+            amount: "1",
+            asset: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+            network: 8453,
+          },
+        },
       },
       {
         id: "i3",
@@ -333,7 +387,13 @@ describe("metrics", () => {
         wallet_address: "0xabc",
         counterparty: "svc",
         protocol: "x402" as const,
-        summary: { paymentRequired: { amount: "2" } },
+        summary: {
+          paymentRequired: {
+            amount: "2",
+            asset: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+            network: 8453,
+          },
+        },
       },
     ];
     const store = {
@@ -343,15 +403,174 @@ describe("metrics", () => {
       getBaseTransaction: () => undefined,
       listReceiptsByInteraction: () => [],
       listWalletsByCounterparty: () => [],
-      getLatestPrice: () => null,
-      getProtocolLabel: () => null,
+      getLatestPrice: (tokenAddress: string, chainId: number) =>
+        tokenAddress.toLowerCase() === "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913" && chainId === 8453
+          ? {
+              id: "price-usdc",
+              token_address: tokenAddress,
+              chain_id: chainId,
+              symbol: "USDC",
+              price_usd: "2.0",
+              source: "coingecko" as const,
+              timestamp: "2024-01-01T00:00:00Z",
+              raw: {},
+            }
+          : null,
+      getProtocolLabel: () => ({
+        id: "svc",
+        contract_address: "svc",
+        chain_id: 8453,
+        protocol_name: "EscrowX",
+        protocol_category: "escrow" as const,
+        source: "dune" as const,
+        metadata: {},
+        created_at: "2024-01-01T00:00:00Z",
+      }),
       listBaseTransactionsByWallet: () => [],
       listTokenTransfersByWallet: () => [],
     } as const;
     const metrics = computeCounterpartyMetrics(store as unknown as import("../server/store").Store, "svc");
     expect(metrics.volume.totalInteractions).toBe(2);
     expect(metrics.paymentBehavior.median).toBe(1.5);
+    expect(metrics.paymentBehaviorUSD.totalVolumeUSD).toBe(6);
+    expect(metrics.protocolActivity.escrowCompletionRate).toBeNull();
     expect(metrics.receiptAvailability.rate).toBe(0);
+  });
+
+  it("parses numeric chain ids from x402 summaries when computing USD metrics", () => {
+    const interactions = [
+      {
+        id: "i1",
+        created_at: "2024-01-01T00:00:00Z",
+        agent_id: "a1",
+        wallet_address: "0xabc",
+        counterparty: "svc",
+        protocol: "x402" as const,
+        summary: {
+          paymentRequired: {
+            amount: "3",
+            asset: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+            network: "8453",
+          },
+        },
+      },
+    ];
+
+    const store = {
+      listInteractionsByWallet: () => interactions,
+      getSettlement: () => undefined,
+      getEvidence: () => [],
+      getWalletSnapshot: () => undefined,
+      getBaseTransaction: () => undefined,
+      listBaseTransactionsByWallet: () => [],
+      listTokenTransfersByWallet: () => [],
+      listReceiptsByInteraction: () => [],
+      listAttestationsByWallet: () => [],
+      listInteractionsByCounterparty: () => [],
+      listWalletsByCounterparty: () => [],
+      getLatestPrice: (tokenAddress: string, chainId: number) =>
+        tokenAddress.toLowerCase() === "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913" && chainId === 8453
+          ? {
+              id: "price-usdc",
+              token_address: tokenAddress,
+              chain_id: chainId,
+              symbol: "USDC",
+              price_usd: "1.5",
+              source: "coingecko" as const,
+              timestamp: "2024-01-01T00:00:00Z",
+              raw: {},
+            }
+          : null,
+      getProtocolLabel: () => null,
+    } as const;
+
+    const metrics = computeAgentMetrics(store as unknown as import("../server/store").Store, "0xabc");
+    expect(metrics.paymentBehaviorUSD.totalVolumeUSD).toBe(4.5);
+  });
+
+  it("enriches interaction amounts with pricing and preserves nulls when pricing is unavailable", async () => {
+    const interactions = [
+      {
+        id: "i1",
+        created_at: "2024-01-01T00:00:00Z",
+        protocol: "x402" as const,
+        summary: {
+          paymentRequired: {
+            amount: "2",
+            asset: "0xtoken",
+            network: 8453,
+          },
+        },
+      },
+      {
+        id: "i2",
+        created_at: "2024-01-01T00:00:00Z",
+        protocol: "x402" as const,
+        summary: {},
+      },
+    ] as Array<import("../server/types").InteractionRecord>;
+
+    const pricingService = {
+      normalizeToUSD: async (amount: number, tokenAddress: string, chainId: number) =>
+        tokenAddress === "0xtoken" && chainId === 8453 ? amount * 2 : null,
+    } as const;
+
+    await expect(enrichWithPricing(interactions, null)).resolves.toEqual([
+      expect.objectContaining({ id: "i1", amountUSD: null }),
+      expect.objectContaining({ id: "i2", amountUSD: null }),
+    ]);
+
+    await expect(
+      enrichWithPricing(
+        interactions,
+        pricingService as unknown as import("../server/pricing").PricingService,
+      ),
+    ).resolves.toEqual([
+      expect.objectContaining({ id: "i1", amountUSD: 4 }),
+      expect.objectContaining({ id: "i2", amountUSD: null }),
+    ]);
+  });
+
+  it("counts failed staking settlements as slashed protocol activity", () => {
+    const interactions = [
+      {
+        id: "i1",
+        created_at: "2024-01-01T00:00:00Z",
+        agent_id: "a1",
+        wallet_address: "0xabc",
+        counterparty: "stake-contract",
+        protocol: "x402" as const,
+        summary: {},
+      },
+    ];
+
+    const store = {
+      listInteractionsByWallet: () => interactions,
+      getSettlement: () => ({ id: "s1", interaction_id: "i1", status: "failed", metadata: {} }),
+      getEvidence: () => [],
+      getWalletSnapshot: () => undefined,
+      getBaseTransaction: () => undefined,
+      listBaseTransactionsByWallet: () => [],
+      listTokenTransfersByWallet: () => [],
+      listReceiptsByInteraction: () => [],
+      listAttestationsByWallet: () => [],
+      listInteractionsByCounterparty: () => [],
+      listWalletsByCounterparty: () => [],
+      getLatestPrice: () => null,
+      getProtocolLabel: () => ({
+        id: "stake-contract",
+        contract_address: "stake-contract",
+        chain_id: 8453,
+        protocol_name: "StakeHub",
+        protocol_category: "staking" as const,
+        source: "dune" as const,
+        metadata: {},
+        created_at: "2024-01-01T00:00:00Z",
+      }),
+    } as const;
+
+    const metrics = computeAgentMetrics(store as unknown as import("../server/store").Store, "0xabc");
+    expect(metrics.protocolActivity.stakingMetrics).toEqual({ staked: 1, slashed: 1 });
   });
 
   it("computes counterparty settlement latency when Base tx timestamps are known", () => {
@@ -490,6 +709,7 @@ describe("metrics", () => {
     const agent = computeAgentMetrics(store as unknown as import("../server/store").Store, "0xabc");
     expect(agent.counterparty.unique).toBeGreaterThan(0);
     expect(agent.paymentBehavior.count).toBe(0);
+    expect(agent.paymentBehaviorUSD.count).toBe(0);
 
     const counterparty = computeCounterpartyMetrics(store as unknown as import("../server/store").Store, "svc");
     expect(counterparty.volume.uniqueWallets).toBe(1);
@@ -543,5 +763,106 @@ describe("metrics", () => {
     expect(metrics.onchain.tokenTransfers.outbound).toBe(0);
     expect(metrics.onchain.tokenTransfers.uniqueTokens).toBe(2);
     expect(metrics.onchain.tokenTransfers.topToken?.symbol).toBe("unknown");
+  });
+
+  it("enriches pricing null branches and counts failed staking settlements", async () => {
+    const interactions = [
+      {
+        id: "i1",
+        created_at: "2024-01-01T00:00:00Z",
+        agent_id: "a1",
+        wallet_address: "0xabc",
+        counterparty: "svc",
+        protocol: "x402" as const,
+        summary: {},
+      },
+      {
+        id: "i2",
+        created_at: "2024-01-01T00:00:01Z",
+        agent_id: "a1",
+        wallet_address: "0xabc",
+        counterparty: "svc",
+        protocol: "x402" as const,
+        summary: { paymentRequired: { amount: "2", asset: "0xtoken", network: 8453 } },
+      },
+    ] as unknown as Array<import("../server/types").InteractionRecord>;
+
+    await expect(enrichWithPricing(interactions, null)).resolves.toEqual([
+      expect.objectContaining({ amountUSD: null }),
+      expect.objectContaining({ amountUSD: null }),
+    ]);
+
+    const pricingService = {
+      normalizeToUSD: async () => 6,
+    } as unknown as import("../server/pricing").PricingService;
+    await expect(enrichWithPricing(interactions, pricingService)).resolves.toEqual([
+      expect.objectContaining({ amountUSD: null }),
+      expect.objectContaining({ amountUSD: 6 }),
+    ]);
+
+    const store = {
+      listInteractionsByWallet: () => [interactions[1]],
+      getSettlement: () => ({ id: "s1", interaction_id: "i2", status: "failed", metadata: {} }),
+      getEvidence: () => [],
+      getWalletSnapshot: () => undefined,
+      getBaseTransaction: () => undefined,
+      listBaseTransactionsByWallet: () => [],
+      listTokenTransfersByWallet: () => [],
+      listReceiptsByInteraction: () => [],
+      listAttestationsByWallet: () => [],
+      listInteractionsByCounterparty: () => [],
+      listWalletsByCounterparty: () => [],
+      getLatestPrice: () => null,
+      getProtocolLabel: () => ({
+        id: "stake-label",
+        contract_address: "0xtoken",
+        chain_id: 8453,
+        protocol_name: "StakeX",
+        protocol_category: "staking" as const,
+        source: "dune" as const,
+        metadata: {},
+        created_at: "2024-01-01T00:00:00Z",
+      }),
+    } as const;
+
+    const metrics = computeAgentMetrics(store as unknown as import("../server/store").Store, "0xabc");
+    expect(metrics.protocolActivity.stakingMetrics).toEqual({ staked: 1, slashed: 1 });
+  });
+
+  it("drops non-numeric USD prices from agent and counterparty totals", () => {
+    const interaction = {
+      id: "i-bad",
+      created_at: "2024-01-01T00:00:00Z",
+      wallet_address: "0xabc",
+      counterparty: "svc",
+      protocol: "x402" as const,
+      summary: { paymentRequired: { amount: "7", asset: "0xtoken", network: 8453 } },
+    };
+
+    const store = {
+      listInteractionsByWallet: () => [interaction],
+      getSettlement: () => undefined,
+      getEvidence: () => [],
+      getWalletSnapshot: () => undefined,
+      getBaseTransaction: () => undefined,
+      listBaseTransactionsByWallet: () => [],
+      listTokenTransfersByWallet: () => [],
+      listReceiptsByInteraction: () => [],
+      listAttestationsByWallet: () => [],
+      listInteractionsByCounterparty: () => [interaction],
+      listWalletsByCounterparty: () => ["0xabc"],
+      getLatestPrice: () => ({ price_usd: "NaN" }),
+      getProtocolLabel: () => null,
+    } as const;
+
+    expect(
+      computeAgentMetrics(store as unknown as import("../server/store").Store, "0xabc").paymentBehaviorUSD.totalVolumeUSD,
+    ).toBe(0);
+    expect(
+      computeCounterpartyMetrics(
+        store as unknown as import("../server/store").Store,
+        "svc",
+      ).paymentBehaviorUSD.totalVolumeUSD,
+    ).toBe(0);
   });
 });

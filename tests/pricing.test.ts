@@ -153,4 +153,120 @@ describe("PricingService", () => {
     expect(prices.get("8453:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913")).toBe(1.0);
     expect(prices.get("8453:0x4200000000000000000000000000000000000006")).toBe(3200.0);
   });
+
+  it("skips batch entries whose prices cannot be resolved", async () => {
+    const fetchMock = vi.fn(async () => okJson({ coins: {} }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const service = new PricingService();
+    const pricesPromise = service.batchGetPrices([{ address: "0xunknown", chainId: 8453 }]);
+    await vi.runAllTimersAsync();
+    expect(await pricesPromise).toEqual(new Map());
+  });
+
+  it("handles contract lookups without price data and unsupported chains", async () => {
+    const fetchMock = vi.fn(async (input: string) => {
+      const url = new URL(input);
+      if (url.hostname.includes("coingecko") && url.pathname.includes("/contract/")) {
+        return okJson({
+          market_data: {
+            current_price: {},
+          },
+        });
+      }
+      if (url.hostname.includes("llama.fi")) {
+        return okJson({ coins: {} });
+      }
+      return notOk(404);
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    const service = new PricingService();
+    await expect(service.getPriceUSD("0xnot-mapped", 8453)).resolves.toBeNull();
+    await expect(service.getPriceUSD("0xnot-mapped", 999999)).resolves.toBeNull();
+  });
+
+  it("looks up unknown tokens via CoinGecko contract endpoints", async () => {
+    const fetchMock = vi.fn(async (input: string) => {
+      const url = new URL(input);
+      if (url.pathname.includes("/coins/base/contract/0xunknown")) {
+        return okJson({
+          market_data: {
+            current_price: {
+              usd: 12.34,
+            },
+          },
+        });
+      }
+
+      return notOk(404);
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    const service = new PricingService();
+    const price = await service.getPriceUSD("0xunknown", 8453);
+    expect(price).toBe(12.34);
+  });
+
+  it("sends the CoinGecko demo key header when configured", async () => {
+    process.env.AFI_COINGECKO_API_KEY = "demo-key";
+    const fetchMock = vi.fn(async (_input: string, init?: RequestInit) => {
+      expect(init?.headers).toEqual(
+        expect.objectContaining({
+          "x-cg-demo-api-key": "demo-key",
+        }),
+      );
+      return okJson({ "usd-coin": { usd: 1 } });
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    const service = new PricingService();
+    await expect(
+      service.getPriceUSD("0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", 8453),
+    ).resolves.toBe(1);
+    delete process.env.AFI_COINGECKO_API_KEY;
+  });
+
+  it("skips null batch results and sends the CoinGecko demo key for contract lookups", async () => {
+    process.env.AFI_COINGECKO_API_KEY = "demo-key";
+    const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
+      const url = new URL(input);
+      if (url.pathname.includes("/contract/")) {
+        expect(init?.headers).toEqual(
+          expect.objectContaining({
+            "x-cg-demo-api-key": "demo-key",
+          }),
+        );
+        return okJson({
+          market_data: {
+            current_price: {
+              usd: 2,
+            },
+          },
+        });
+      }
+
+      if (url.pathname.includes("/simple/price")) {
+        return okJson({ "usd-coin": { usd: 1 } });
+      }
+
+      return notOk(404);
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    const service = new PricingService();
+    const prices = await service.batchGetPrices([
+      { address: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", chainId: 8453 },
+      { address: "0xcontract", chainId: 8453 },
+      { address: "0xmissing", chainId: 999999 },
+    ]);
+
+    expect(prices.get("8453:0xcontract")).toBe(2);
+    expect(prices.has("999999:0xmissing")).toBe(false);
+    delete process.env.AFI_COINGECKO_API_KEY;
+  });
 });

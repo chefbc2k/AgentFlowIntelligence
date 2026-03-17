@@ -55,15 +55,11 @@ export class JobScheduler {
       console.log("[JobScheduler] Dune client not configured, skipping protocol label job");
     }
 
-    // Run jobs immediately on startup
-    this.refreshPrices().catch((error) => {
-      console.error("[JobScheduler] Initial price refresh failed:", error);
-    });
+    // Run jobs immediately on startup. Individual refreshers already log and continue on per-item failures.
+    void this.refreshPrices();
 
     if (this.duneClient) {
-      this.refreshProtocolLabels().catch((error) => {
-        console.error("[JobScheduler] Initial protocol label refresh failed:", error);
-      });
+      void this.refreshProtocolLabels();
     }
   }
 

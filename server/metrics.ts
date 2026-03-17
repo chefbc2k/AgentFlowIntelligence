@@ -11,6 +11,10 @@ function toLower(value?: string) {
   return typeof value === "string" ? value.toLowerCase() : undefined;
 }
 
+function isDefined<T>(value: T | null | undefined): value is T {
+  return value !== undefined && value !== null;
+}
+
 function toChainId(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) {
     return value;
@@ -186,7 +190,8 @@ function computeControlsSummary(controls: Array<ReturnType<typeof deriveControls
 }
 
 /**
- * Extract token address and chain ID from interaction
+ * Extract token address and chain ID from interaction.
+ * AFI should not invent asset metadata when the packet did not capture it.
  */
 function extractTokenInfo(interaction: InteractionRecord): { address: string; chainId: number } | null {
   const summary = interaction.summary ?? {};
@@ -201,8 +206,7 @@ function extractTokenInfo(interaction: InteractionRecord): { address: string; ch
     }
   }
 
-  // Default to USDC on Base if no payment info
-  return { address: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", chainId: 8453 };
+  return null;
 }
 
 /**
@@ -232,7 +236,6 @@ export async function enrichWithPricing(
       enriched.push({ ...interaction, amountUSD: null });
       continue;
     }
-
     const amountUSD = await pricingService.normalizeToUSD(
       rawAmount,
       tokenInfo.address,
@@ -297,11 +300,11 @@ function computeProtocolMetrics(
 ) {
   const protocols = enrichedInteractions
     .map((i) => i.protocolName)
-    .filter((name): name is string => name !== undefined && name !== null);
+    .filter(isDefined);
 
   const categories = enrichedInteractions
     .map((i) => i.protocolCategory)
-    .filter((cat): cat is string => cat !== undefined && cat !== null);
+    .filter(isDefined);
 
   const protocolCounts = new Map<string, number>();
   for (const protocol of protocols) {
@@ -325,7 +328,7 @@ function computeProtocolMetrics(
   const escrowInteractions = enrichedInteractions.filter((i) => i.protocolCategory === "escrow");
   const escrowSettlements = escrowInteractions
     .map((interaction) => store.getSettlement(interaction.id))
-    .filter((settlement): settlement is SettlementRecord => settlement !== undefined);
+    .filter(isDefined);
   const escrowCompleted = escrowSettlements.filter((settlement) => settlement.status === "confirmed").length;
   const escrowCompletionRate =
     escrowSettlements.length > 0 ? escrowCompleted / escrowSettlements.length : null;
@@ -334,7 +337,7 @@ function computeProtocolMetrics(
   const stakingInteractions = enrichedInteractions.filter((i) => i.protocolCategory === "staking");
   const stakingSettlements = stakingInteractions
     .map((interaction) => store.getSettlement(interaction.id))
-    .filter((settlement): settlement is SettlementRecord => settlement !== undefined);
+    .filter(isDefined);
   const stakingMetrics =
     stakingInteractions.length > 0
       ? {
@@ -419,7 +422,6 @@ export function computeAgentMetrics(store: Store, wallet: string) {
 
       const tokenInfo = extractTokenInfo(interaction);
       if (!tokenInfo) return null;
-
       const price = store.getLatestPrice(tokenInfo.address, tokenInfo.chainId);
       if (!price) return null;
 
@@ -500,7 +502,6 @@ export function computeCounterpartyMetrics(store: Store, counterparty: string) {
 
       const tokenInfo = extractTokenInfo(interaction);
       if (!tokenInfo) return null;
-
       const price = store.getLatestPrice(tokenInfo.address, tokenInfo.chainId);
       if (!price) return null;
 

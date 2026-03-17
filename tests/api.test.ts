@@ -3,6 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApi, createApp, createRouteHandlers, send } from "../server/index";
+import type { AppConfig } from "../server/config";
 import { Store } from "../server/store";
 
 const okJson = (payload: unknown) => ({
@@ -20,6 +21,19 @@ const notOk = (status: number) => ({
 function createTestStore() {
   const dataDir = mkdtempSync(join(tmpdir(), "afi-api-"));
   return new Store({ dbPath: ":memory:", dataDir });
+}
+
+function createTestConfig(overrides: Partial<AppConfig> = {}): AppConfig {
+  return {
+    port: "0",
+    dbPath: ":memory:",
+    dataDir: "/tmp",
+    locusBaseUrl: "https://beta-api.paywithlocus.com",
+    easBaseUrl: "https://base.easscan.org/graphql",
+    easSepoliaUrl: "https://base-sepolia.easscan.org/graphql",
+    enableBackgroundJobs: false,
+    ...overrides,
+  };
 }
 
 function stubFetchForHappyPath() {
@@ -165,18 +179,19 @@ describe("server api logic", () => {
   it("covers createApp route wiring", () => {
     stubFetchForHappyPath();
     const store = createTestStore();
+    const processOnSpy = vi.spyOn(process, "on");
+    const processExitSpy = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
     createApp({
-      config: {
-        port: "0",
-        dbPath: ":memory:",
-        dataDir: "/tmp",
-        locusBaseUrl: "https://beta-api.paywithlocus.com",
-        easBaseUrl: "https://base.easscan.org/graphql",
-        easSepoliaUrl: "https://base-sepolia.easscan.org/graphql",
-      },
+      config: createTestConfig(),
       store,
     });
     expect(true).toBe(true);
+    const signalHandlers = new Map(
+      processOnSpy.mock.calls.map(([signal, handler]) => [signal, handler as () => void]),
+    );
+    signalHandlers.get("SIGTERM")?.();
+    signalHandlers.get("SIGINT")?.();
+    expect(processExitSpy).toHaveBeenCalledWith(0);
 
     const dataDir = mkdtempSync(join(tmpdir(), "afi-app-"));
     const prior = {
@@ -185,12 +200,14 @@ describe("server api logic", () => {
       AFI_LOCUS_BASE_URL: process.env.AFI_LOCUS_BASE_URL,
       AFI_EAS_BASE_URL: process.env.AFI_EAS_BASE_URL,
       AFI_EAS_SEPOLIA_URL: process.env.AFI_EAS_SEPOLIA_URL,
+      AFI_ENABLE_BACKGROUND_JOBS: process.env.AFI_ENABLE_BACKGROUND_JOBS,
     };
     process.env.AFI_DB_PATH = ":memory:";
     process.env.AFI_DATA_DIR = dataDir;
     process.env.AFI_LOCUS_BASE_URL = "https://beta-api.paywithlocus.com";
     process.env.AFI_EAS_BASE_URL = "https://base.easscan.org/graphql";
     process.env.AFI_EAS_SEPOLIA_URL = "https://base-sepolia.easscan.org/graphql";
+    process.env.AFI_ENABLE_BACKGROUND_JOBS = "false";
     try {
       createApp();
     } finally {
@@ -198,6 +215,8 @@ describe("server api logic", () => {
         if (value === undefined) delete process.env[key];
         else process.env[key] = value;
       }
+      processOnSpy.mockRestore();
+      processExitSpy.mockRestore();
     }
   });
 
@@ -205,14 +224,7 @@ describe("server api logic", () => {
     stubFetchForHappyPath();
     const store = createTestStore();
     const api = createApi({
-      config: {
-        port: "0",
-        dbPath: ":memory:",
-        dataDir: "/tmp",
-        locusBaseUrl: "https://beta-api.paywithlocus.com",
-        easBaseUrl: "https://base.easscan.org/graphql",
-        easSepoliaUrl: "https://base-sepolia.easscan.org/graphql",
-      },
+      config: createTestConfig(),
       store,
     });
 
@@ -225,14 +237,7 @@ describe("server api logic", () => {
     stubFetchForHappyPath();
     const store = createTestStore();
     const api = createApi({
-      config: {
-        port: "0",
-        dbPath: ":memory:",
-        dataDir: "/tmp",
-        locusBaseUrl: "https://beta-api.paywithlocus.com",
-        easBaseUrl: "https://base.easscan.org/graphql",
-        easSepoliaUrl: "https://base-sepolia.easscan.org/graphql",
-      },
+      config: createTestConfig(),
       store,
     });
 
@@ -276,14 +281,7 @@ describe("server api logic", () => {
     stubFetchForHappyPath();
     const store = createTestStore();
     const api = createApi({
-      config: {
-        port: "0",
-        dbPath: ":memory:",
-        dataDir: "/tmp",
-        locusBaseUrl: "https://beta-api.paywithlocus.com",
-        easBaseUrl: "https://base.easscan.org/graphql",
-        easSepoliaUrl: "https://base-sepolia.easscan.org/graphql",
-      },
+      config: createTestConfig(),
       store,
     });
 
@@ -316,14 +314,7 @@ describe("server api logic", () => {
     stubFetchForHappyPath();
     const store = createTestStore();
     const api = createApi({
-      config: {
-        port: "0",
-        dbPath: ":memory:",
-        dataDir: "/tmp",
-        locusBaseUrl: "https://beta-api.paywithlocus.com",
-        easBaseUrl: "https://base.easscan.org/graphql",
-        easSepoliaUrl: "https://base-sepolia.easscan.org/graphql",
-      },
+      config: createTestConfig(),
       store,
     });
 
@@ -347,18 +338,61 @@ describe("server api logic", () => {
     ).toBe(true);
   });
 
+  it("returns enriched interaction detail with USD pricing from stored price snapshots", async () => {
+    const store = createTestStore();
+    store.upsertInteraction({
+      id: "i-enriched",
+      created_at: "2024-01-01T00:00:00Z",
+      wallet_address: "0xwallet",
+      counterparty: "0xcontract",
+      protocol: "x402",
+      summary: {
+        paymentRequired: {
+          amount: "2",
+          asset: "0xtoken",
+          network: "8453",
+        },
+      },
+    });
+    store.upsertPrice({
+      id: "8453:0xtoken",
+      token_address: "0xtoken",
+      chain_id: 8453,
+      symbol: "USDC",
+      price_usd: "1.25",
+      source: "coingecko",
+      timestamp: "2024-01-01T00:00:00Z",
+      raw: {},
+    });
+    store.upsertProtocolLabel({
+      id: "8453:0xcontract",
+      contract_address: "0xcontract",
+      chain_id: 8453,
+      protocol_name: "EscrowX",
+      protocol_category: "escrow",
+      source: "dune",
+      metadata: {},
+      created_at: "2024-01-01T00:00:00Z",
+    });
+
+    const api = createApi({
+      config: createTestConfig(),
+      store,
+    });
+
+    const detail = api.getInteractionEnriched("i-enriched");
+    expect(detail.status).toBe(200);
+    expect((detail.body as { amountUSD: number | null }).amountUSD).toBe(2.5);
+    expect(
+      (detail.body as { interaction: { protocolName?: string; protocolCategory?: string } }).interaction,
+    ).toEqual(expect.objectContaining({ protocolName: "EscrowX", protocolCategory: "escrow" }));
+  });
+
   it("returns x402 packet sections for challenge-only then full handshake ingestion", async () => {
     stubFetchForHappyPath();
     const store = createTestStore();
     const api = createApi({
-      config: {
-        port: "0",
-        dbPath: ":memory:",
-        dataDir: "/tmp",
-        locusBaseUrl: "https://beta-api.paywithlocus.com",
-        easBaseUrl: "https://base.easscan.org/graphql",
-        easSepoliaUrl: "https://base-sepolia.easscan.org/graphql",
-      },
+      config: createTestConfig(),
       store,
     });
 
@@ -397,14 +431,7 @@ describe("server api logic", () => {
     stubFetchForHappyPath();
     const store = createTestStore();
     const api = createApi({
-      config: {
-        port: "0",
-        dbPath: ":memory:",
-        dataDir: "/tmp",
-        locusBaseUrl: "https://beta-api.paywithlocus.com",
-        easBaseUrl: "https://base.easscan.org/graphql",
-        easSepoliaUrl: "https://base-sepolia.easscan.org/graphql",
-      },
+      config: createTestConfig(),
       store,
     });
 
@@ -467,14 +494,7 @@ describe("server api logic", () => {
     stubFetchForHappyPath();
     const store = createTestStore();
     const api = createApi({
-      config: {
-        port: "0",
-        dbPath: ":memory:",
-        dataDir: "/tmp",
-        locusBaseUrl: "https://beta-api.paywithlocus.com",
-        easBaseUrl: "https://base.easscan.org/graphql",
-        easSepoliaUrl: "https://base-sepolia.easscan.org/graphql",
-      },
+      config: createTestConfig(),
       store,
     });
 
@@ -510,14 +530,7 @@ describe("server api logic", () => {
     );
     const store = createTestStore();
     const api = createApi({
-      config: {
-        port: "0",
-        dbPath: ":memory:",
-        dataDir: "/tmp",
-        locusBaseUrl: "https://beta-api.paywithlocus.com",
-        easBaseUrl: "https://base.easscan.org/graphql",
-        easSepoliaUrl: "https://base-sepolia.easscan.org/graphql",
-      },
+      config: createTestConfig(),
       store,
     });
 
@@ -529,14 +542,7 @@ describe("server api logic", () => {
     stubFetchForHappyPath();
     const store = createTestStore();
     const api = createApi({
-      config: {
-        port: "0",
-        dbPath: ":memory:",
-        dataDir: "/tmp",
-        locusBaseUrl: "https://beta-api.paywithlocus.com",
-        easBaseUrl: "https://base.easscan.org/graphql",
-        easSepoliaUrl: "https://base-sepolia.easscan.org/graphql",
-      },
+      config: createTestConfig(),
       store,
     });
 
@@ -554,15 +560,7 @@ describe("server api logic", () => {
     stubFetchForHappyPath();
     const store = createTestStore();
     const api = createApi({
-      config: {
-        port: "0",
-        dbPath: ":memory:",
-        dataDir: "/tmp",
-        locusApiKey: "key",
-        locusBaseUrl: "https://beta-api.paywithlocus.com",
-        easBaseUrl: "https://base.easscan.org/graphql",
-        easSepoliaUrl: "https://base-sepolia.easscan.org/graphql",
-      },
+      config: createTestConfig({ locusApiKey: "key" }),
       store,
     });
 
@@ -609,15 +607,7 @@ describe("server api logic", () => {
 
     const store = createTestStore();
     const api = createApi({
-      config: {
-        port: "0",
-        dbPath: ":memory:",
-        dataDir: "/tmp",
-        locusApiKey: "key",
-        locusBaseUrl: "https://beta-api.paywithlocus.com",
-        easBaseUrl: "https://base.easscan.org/graphql",
-        easSepoliaUrl: "https://base-sepolia.easscan.org/graphql",
-      },
+      config: createTestConfig({ locusApiKey: "key" }),
       store,
     });
 
@@ -655,15 +645,7 @@ describe("server api logic", () => {
 
     const store = createTestStore();
     const api = createApi({
-      config: {
-        port: "0",
-        dbPath: ":memory:",
-        dataDir: "/tmp",
-        locusApiKey: "key",
-        locusBaseUrl: "https://beta-api.paywithlocus.com",
-        easBaseUrl: "https://base.easscan.org/graphql",
-        easSepoliaUrl: "https://base-sepolia.easscan.org/graphql",
-      },
+      config: createTestConfig({ locusApiKey: "key" }),
       store,
     });
 
@@ -692,15 +674,7 @@ describe("server api logic", () => {
     );
     const store = createTestStore();
     const api = createApi({
-      config: {
-        port: "0",
-        dbPath: ":memory:",
-        dataDir: "/tmp",
-        locusApiKey: "key",
-        locusBaseUrl: "https://beta-api.paywithlocus.com",
-        easBaseUrl: "https://base.easscan.org/graphql",
-        easSepoliaUrl: "https://base-sepolia.easscan.org/graphql",
-      },
+      config: createTestConfig({ locusApiKey: "key" }),
       store,
     });
 
@@ -712,15 +686,7 @@ describe("server api logic", () => {
     stubFetchForHappyPath();
     const store = createTestStore();
     const api = createApi({
-      config: {
-        port: "0",
-        dbPath: ":memory:",
-        dataDir: "/tmp",
-        locusApiKey: "key",
-        locusBaseUrl: "https://beta-api.paywithlocus.com",
-        easBaseUrl: "https://base.easscan.org/graphql",
-        easSepoliaUrl: "https://base-sepolia.easscan.org/graphql",
-      },
+      config: createTestConfig({ locusApiKey: "key" }),
       store,
     });
     const handlers = createRouteHandlers(api);
@@ -732,6 +698,7 @@ describe("server api logic", () => {
     handlers.health({}, res);
     handlers.listInteractions({}, res);
     handlers.getInteraction({ params: { id: "missing" } }, res);
+    handlers.getInteractionEnriched({ params: { id: "missing" } }, res);
     await handlers.ingestX402({ body: { headers: {}, txHash: "0xtx" } }, res);
     await handlers.enrichBase({ body: { txHash: "0xtx" } }, res);
     await handlers.baseTx({ params: { hash: "0xtx" } }, res);
@@ -771,15 +738,7 @@ describe("server api logic", () => {
     stubFetchForHappyPath();
     const store = createTestStore();
     const api = createApi({
-      config: {
-        port: "0",
-        dbPath: ":memory:",
-        dataDir: "/tmp",
-        locusApiKey: "key",
-        locusBaseUrl: "https://beta-api.paywithlocus.com",
-        easBaseUrl: "https://base.easscan.org/graphql",
-        easSepoliaUrl: "https://base-sepolia.easscan.org/graphql",
-      },
+      config: createTestConfig({ locusApiKey: "key" }),
       store,
     });
 
@@ -816,14 +775,7 @@ describe("server api logic", () => {
     });
 
     const api = createApi({
-      config: {
-        port: "0",
-        dbPath: ":memory:",
-        dataDir: "/tmp",
-        locusBaseUrl: "https://beta-api.paywithlocus.com",
-        easBaseUrl: "https://base.easscan.org/graphql",
-        easSepoliaUrl: "https://base-sepolia.easscan.org/graphql",
-      },
+      config: createTestConfig(),
       store,
     });
 
@@ -836,19 +788,59 @@ describe("server api logic", () => {
     stubFetchForHappyPath();
     const store = createTestStore();
     const api = createApi({
-      config: {
-        port: "0",
-        dbPath: ":memory:",
-        dataDir: "/tmp",
-        locusBaseUrl: "https://beta-api.paywithlocus.com",
-        easBaseUrl: "https://base.easscan.org/graphql",
-        easSepoliaUrl: "https://base-sepolia.easscan.org/graphql",
-      },
+      config: createTestConfig(),
       store,
     });
 
     const result = await api.locusStatus();
     expect(result.status).toBe(400);
     expect((result.body as { error: string }).error).toBe("missing_locus_key");
+  });
+
+  it("returns enriched interaction details and exercises graceful shutdown hooks", async () => {
+    stubFetchForHappyPath();
+    const store = createTestStore();
+    store.upsertInteraction({
+      id: "priced-1",
+      created_at: "2024-01-01T00:00:00Z",
+      wallet_address: "0xwallet",
+      counterparty: "svc",
+      service: "/quote",
+      protocol: "x402",
+      summary: { paymentRequired: { amount: "2", asset: "0xtoken", network: 8453 } },
+    });
+    store.upsertSettlement({
+      id: "priced-1:settlement",
+      interaction_id: "priced-1",
+      tx_hash: "0xtx",
+      status: "confirmed",
+      metadata: {},
+    });
+    store.upsertPrice({
+      id: "price-1",
+      token_address: "0xtoken",
+      chain_id: 8453,
+      symbol: "TOK",
+      price_usd: "3",
+      source: "coingecko",
+      timestamp: "2024-01-01T00:00:00Z",
+      raw: {},
+    });
+
+    const api = createApi({ config: createTestConfig(), store });
+    const enriched = api.getInteractionEnriched("priced-1");
+    expect(enriched.status).toBe(200);
+    expect((enriched.body as { amountUSD: number }).amountUSD).toBe(6);
+
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+    createApp({ config: createTestConfig(), store });
+
+    process.emit("SIGTERM");
+    process.emit("SIGINT");
+
+    expect(logSpy).toHaveBeenCalledWith("SIGTERM received, stopping background jobs");
+    expect(logSpy).toHaveBeenCalledWith("SIGINT received, stopping background jobs");
+    expect(exitSpy).toHaveBeenCalledWith(0);
   });
 });

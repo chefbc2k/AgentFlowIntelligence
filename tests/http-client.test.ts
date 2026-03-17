@@ -237,4 +237,17 @@ describe("HttpClient", () => {
       }),
     );
   });
+
+  it("wraps non-Error throwables during retries", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      throw "network-down";
+    }));
+
+    const client = new HttpClient({
+      baseUrl: "https://api.example.com",
+      retryConfig: { maxRetries: 0, backoffMs: 1 },
+    });
+
+    await expect(client.get("/test")).rejects.toThrow("network-down");
+  });
 });
