@@ -454,7 +454,7 @@ function computeCounterpartyStats(interactions: InteractionRecord[]) {
 
   return {
     unique: counterparties.size,
-    top: top ? { id: top[0], share: top[1] / (interactions.length || 1) } : null,
+    top: top ? { id: top[0], share: top[1] / interactions.length } : null,
     repeatRate: interactions.length > 0 ? (interactions.length - counterparties.size) / interactions.length : 0,
   };
 }

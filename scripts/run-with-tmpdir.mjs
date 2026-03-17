@@ -8,10 +8,16 @@ if (argv.length === 0) {
   process.exit(2);
 }
 
-const tmpDir = path.join(process.cwd(), ".afi-tmp");
-fs.mkdirSync(tmpDir, { recursive: true });
-fs.mkdirSync(path.join(process.cwd(), "coverage", "server", ".tmp"), { recursive: true });
-fs.mkdirSync(path.join(process.cwd(), "coverage", "ui", ".tmp"), { recursive: true });
+const tmpRoot = path.join(process.cwd(), ".afi-tmp");
+fs.mkdirSync(tmpRoot, { recursive: true });
+const reportsDirFlagIndex = argv.findIndex((value) => value === "--coverage.reportsDirectory");
+if (reportsDirFlagIndex >= 0) {
+  const reportsDir = argv[reportsDirFlagIndex + 1];
+  if (reportsDir) {
+    fs.mkdirSync(path.join(process.cwd(), reportsDir, ".tmp"), { recursive: true });
+  }
+}
+const tmpDir = fs.mkdtempSync(path.join(tmpRoot, "run-"));
 
 const command = argv[0];
 const commandArgs = argv.slice(1);

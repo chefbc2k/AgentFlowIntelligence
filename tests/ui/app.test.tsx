@@ -43,9 +43,27 @@ describe("AFI UI", () => {
       counterparty: "svc",
       service: "/paid",
       protocol: "x402",
+      protocolName: "EscrowX",
     }));
     const interactions = [
       ...repeatedEdge,
+      {
+        id: "i-protocol-name",
+        created_at: "2024-01-01T00:00:00Z",
+        wallet_address: "0xwallet",
+        counterparty: "svc",
+        protocolName: "Uniswap",
+        protocol: "x402",
+      },
+      {
+        id: "i-protocol-and-service",
+        created_at: "2024-01-01T00:00:00Z",
+        wallet_address: "0xwallet",
+        counterparty: "svc",
+        protocolName: "Uniswap",
+        service: "/swap",
+        protocol: "x402",
+      },
       {
         id: "i-unknown",
         created_at: "2024-01-02T00:00:00Z",
@@ -91,13 +109,22 @@ describe("AFI UI", () => {
         controls: { ...detailWithin.controls, amount: 2, currency: null, withinAllowance: false, withinMaxTx: null },
       }),
     );
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        ...detailWithin,
+        amountUSD: 3.5,
+        controls: { ...detailWithin.controls, amount: 7, currency: "USDC" },
+      }),
+    );
 
     render(<App />);
 
     expect(await screen.findByText("11")).toBeInTheDocument();
-    expect(screen.getByText("1")).toBeInTheDocument();
-    expect(screen.getByText("→ svc")).toBeInTheDocument();
-    expect(screen.getByText("→ /paid")).toBeInTheDocument();
+    expect(screen.getAllByText("1")).toHaveLength(3);
+    expect(screen.getAllByText("→ svc")).toHaveLength(3);
+    expect(screen.getByText("→ EscrowX /paid")).toBeInTheDocument();
+    expect(screen.getByText("→ Uniswap")).toBeInTheDocument();
+    expect(screen.getByText("→ Uniswap /swap")).toBeInTheDocument();
 
     const bars = Array.from(document.querySelectorAll(".afi-edge-bar > div"));
     expect(bars[0]).toHaveStyle({ width: "100%" });
@@ -123,6 +150,9 @@ describe("AFI UI", () => {
 
     const amountLabel = screen.getByText("Amount");
     expect(amountLabel.parentElement?.querySelector("strong")).toHaveTextContent("2");
+
+    within(interactionsList).getAllByRole("button", { name: "View" })[0]?.click();
+    expect(await screen.findByText("3.50 USD")).toBeInTheDocument();
   });
 
   it("loads agent + counterparty metrics and supports early-return when inputs are empty", async () => {

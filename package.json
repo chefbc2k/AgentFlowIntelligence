@@ -16,8 +16,8 @@
     "test": "npm run test:server && npm run test:ui",
     "test:ui": "node scripts/run-with-tmpdir.mjs vitest run --config vitest.ui.config.ts",
     "test:server": "node scripts/run-with-tmpdir.mjs vitest run --config vitest.config.ts",
-    "test:coverage:server": "node scripts/run-with-tmpdir.mjs vitest run --config vitest.config.ts --coverage",
-    "test:coverage:ui": "node scripts/run-with-tmpdir.mjs vitest run --config vitest.ui.config.ts --coverage",
+    "test:coverage:server": "node scripts/run-with-tmpdir.mjs vitest run --config vitest.config.ts --coverage --coverage.reporter=json --coverage.reportsDirectory coverage/server-json",
+    "test:coverage:ui": "node scripts/run-with-tmpdir.mjs vitest run --config vitest.ui.config.ts --coverage --coverage.reporter=json --coverage.reportsDirectory coverage/ui-json",
     "test:coverage": "npm run test:coverage:server && npm run test:coverage:ui",
     "validate": "npm run lint && npm run typecheck && npm run build:ui && npm run test:coverage"
   },

@@ -40,6 +40,12 @@ Rules:
 
 ## 2026-03-17
 
+- Closed the remaining AFI enrichment-slice validation regressions by fixing the coverage runner’s shared-temp-dir collision and by covering the last protocol-aware metrics + UI flow-label branches.
+- Root cause fixed at source: counterparty-share math now divides by the real interaction count, `scripts/run-with-tmpdir.mjs` allocates a unique temp workspace per run, and coverage scripts emit into dedicated JSON report directories so server/UI V8 artifacts do not collide.
+- Added regression coverage for protocol-category rollups, inbound/outbound USD transfer totals, numeric stored price values, missing tx targets during protocol labeling, protocol-name/service flow labels, and packet amount rendering when `amountUSD` is present.
+- Validation status: `npm run validate` passed cleanly on March 17, 2026 with lint green, `tsc --noEmit` green, build green, and server + UI coverage enforced at 100% lines / 100% statements / 100% functions / 100% branches.
+- Files/modules affected: `server/metrics.ts`, `tests/metrics.test.ts`, `tests/ui/app.test.tsx`, `scripts/run-with-tmpdir.mjs`, `vitest.config.ts`, `vitest.ui.config.ts`, `package.json`.
+
 - Restored repo-wide validation to green by closing coverage gaps introduced by the new x402 transcript + onchain metrics slice.
 - Added targeted regression tests for:
   - Base block timestamp parsing edge cases (hex + non-hex formats, zero timestamps).

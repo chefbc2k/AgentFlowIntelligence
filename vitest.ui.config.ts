@@ -8,7 +8,7 @@ export default defineConfig({
     pool: "forks",
     coverage: {
       provider: "v8",
-      reporter: ["text"],
+      reporter: ["json"],
       reportsDirectory: "coverage/ui",
       include: ["src/**/*.{ts,tsx}"],
       exclude: ["src/**/*.d.ts"],

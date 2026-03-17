@@ -921,6 +921,88 @@ describe("metrics", () => {
     expect(metrics.onchain.tokenTransfers.topToken?.symbol).toBe("unknown");
   });
 
+  it("rolls up onchain protocol categories and priced transfer volumes", () => {
+    const store = {
+      listInteractionsByWallet: () => [],
+      getSettlement: () => undefined,
+      getEvidence: () => [],
+      getWalletSnapshot: () => undefined,
+      getBaseTransaction: () => undefined,
+      listBaseTransactionsByWallet: () => [
+        { tx_hash: "0x1", status: "confirmed", from: "0xabc", to: "0xescrow", raw: {}, created_at: "2024-01-01T00:00:00Z" },
+        { tx_hash: "0x2", status: "failed", from: "0xabc", to: "0xvault", raw: {}, created_at: "2024-01-01T00:01:00Z" },
+        { tx_hash: "0x3", status: "unknown", from: "0xother", to: undefined, raw: {}, created_at: "2024-01-01T00:02:00Z" },
+      ],
+      listTokenTransfersByWallet: () => [
+        {
+          id: "t-in",
+          tx_hash: "0x1",
+          from: "0xvault",
+          to: "0xabc",
+          token_address: "0xpriced-in",
+          token_symbol: "PIN",
+          value: "2",
+          raw: {},
+          created_at: "2024-01-01T00:00:01Z",
+        },
+        {
+          id: "t-out",
+          tx_hash: "0x2",
+          from: "0xabc",
+          to: "0xescrow",
+          token_address: "0xpriced-out",
+          token_symbol: "POUT",
+          value: "3",
+          raw: {},
+          created_at: "2024-01-01T00:01:01Z",
+        },
+      ],
+      listReceiptsByInteraction: () => [],
+      listAttestationsByWallet: () => [],
+      listInteractionsByCounterparty: () => [],
+      listWalletsByCounterparty: () => [],
+      getLatestPrice: (tokenAddress: string) =>
+        tokenAddress === "0xpriced-in"
+          ? ({ price_usd: "1.5" } as const)
+          : tokenAddress === "0xpriced-out"
+            ? ({ price_usd: "2" } as const)
+            : null,
+      getProtocolLabel: (contractAddress: string) =>
+        contractAddress === "0xescrow"
+          ? ({
+              id: "escrow",
+              contract_address: contractAddress,
+              chain_id: 8453,
+              protocol_name: "EscrowX",
+              protocol_category: "escrow" as const,
+              source: "dune" as const,
+              metadata: {},
+              created_at: "2024-01-01T00:00:00Z",
+            })
+          : contractAddress === "0xvault"
+            ? ({
+                id: "vault",
+                contract_address: contractAddress,
+                chain_id: 8453,
+                protocol_name: "VaultY",
+                protocol_category: "lending" as const,
+                source: "dune" as const,
+                metadata: {},
+                created_at: "2024-01-01T00:00:00Z",
+              })
+            : null,
+    } as const;
+
+    const metrics = computeAgentMetrics(store as unknown as import("../server/store").Store, "0xabc");
+
+    expect(metrics.onchain.tokenTransfers.inboundVolumeUSD).toBe(3);
+    expect(metrics.onchain.tokenTransfers.outboundVolumeUSD).toBe(6);
+    expect(metrics.onchain.tokenTransfers.totalVolumeUSD).toBe(9);
+    expect(metrics.onchain.protocols.unique).toBe(2);
+    expect(metrics.onchain.protocols.categoryBreakdown).toEqual({ escrow: 1, lending: 1 });
+    expect(metrics.onchain.protocols.topProtocol?.name).toBe("EscrowX");
+  });
+
   it("enriches pricing null branches and counts failed staking settlements", async () => {
     const interactions = [
       {
@@ -1099,7 +1181,7 @@ describe("metrics", () => {
           token_symbol: "USDC",
           from: "0xabc",
           to: "0xdef",
-          value: "3",
+          value: 3,
           raw: {},
           created_at: "2024-01-01T00:00:01Z",
         },
@@ -1142,6 +1224,97 @@ describe("metrics", () => {
     expect(metrics.onchain.tokenTransfers.totalVolumeUSD).toBe(7.5);
     expect(metrics.onchain.protocols.unique).toBe(1);
     expect(metrics.onchain.protocols.topProtocol).toEqual({ name: "BridgeX", share: 0.5 });
-    expect(metrics.onchain.protocols.categoryBreakdown).toEqual({ bridge: 2 });
+    expect(metrics.onchain.protocols.categoryBreakdown).toEqual({ bridge: 1 });
+  });
+
+  it("accepts numeric store values when normalizing stored USD amounts", () => {
+    const interaction = {
+      id: "numeric-1",
+      created_at: "2024-01-01T00:00:00Z",
+      wallet_address: "0xwallet",
+      counterparty: "svc",
+      protocol: "x402" as const,
+      summary: {
+        paymentRequired: {
+          amount: "2",
+          asset: "0xtoken",
+          network: 8453,
+        },
+      },
+    };
+
+    const store = {
+      listInteractionsByWallet: () => [interaction],
+      getSettlement: () => undefined,
+      getEvidence: () => [],
+      getWalletSnapshot: () => undefined,
+      getBaseTransaction: () => undefined,
+      listBaseTransactionsByWallet: () => [],
+      listTokenTransfersByWallet: () => [
+        {
+          id: "transfer-1",
+          token_address: "0xtoken",
+          token_symbol: "TOK",
+          from: "0xwallet",
+          to: "0xother",
+          value: 3,
+          raw: {},
+          created_at: "2024-01-01T00:00:01Z",
+        },
+      ],
+      listReceiptsByInteraction: () => [],
+      listAttestationsByWallet: () => [],
+      listInteractionsByCounterparty: () => [],
+      listWalletsByCounterparty: () => [],
+      getLatestPrice: () =>
+        ({
+          id: "price-numeric",
+          token_address: "0xtoken",
+          chain_id: 8453,
+          symbol: "TOK",
+          price_usd: 1.5,
+          source: "coingecko",
+          timestamp: "2024-01-01T00:00:00Z",
+          raw: {},
+        }) as unknown as {
+          id: string;
+          token_address: string;
+          chain_id: number;
+          symbol: string;
+          price_usd: string;
+          source: "coingecko";
+          timestamp: string;
+          raw: Record<string, unknown>;
+        },
+      getProtocolLabel: () => null,
+    } as const;
+
+    const metrics = computeAgentMetrics(store as unknown as import("../server/store").Store, "0xwallet");
+    expect(metrics.paymentBehaviorUSD.totalVolumeUSD).toBe(3);
+    expect(metrics.onchain.tokenTransfers.outboundVolumeUSD).toBe(4.5);
+  });
+
+  it("skips onchain protocol labeling when the tx target is absent", () => {
+    const store = {
+      listInteractionsByWallet: () => [],
+      getSettlement: () => undefined,
+      getEvidence: () => [],
+      getWalletSnapshot: () => undefined,
+      getBaseTransaction: () => undefined,
+      listBaseTransactionsByWallet: () => [{ tx_hash: "0xmissing-to", status: "unknown" as const, raw: {}, created_at: "2024-01-01T00:00:00Z" }],
+      listTokenTransfersByWallet: () => [],
+      listReceiptsByInteraction: () => [],
+      listAttestationsByWallet: () => [],
+      listInteractionsByCounterparty: () => [],
+      listWalletsByCounterparty: () => [],
+      getLatestPrice: () => null,
+      getProtocolLabel: () => {
+        throw new Error("should not be called without tx.to");
+      },
+    } as const;
+
+    const metrics = computeAgentMetrics(store as unknown as import("../server/store").Store, "0xwallet");
+    expect(metrics.onchain.protocols.unique).toBe(0);
+    expect(metrics.onchain.protocols.topProtocol).toBeNull();
   });
 });
