@@ -117,6 +117,26 @@ export function openDatabase(config: DatabaseConfig) {
       raw text not null,
       created_at text not null
     );
+    create table if not exists prices (
+      id text primary key,
+      token_address text,
+      chain_id integer,
+      symbol text,
+      price_usd text not null,
+      source text not null,
+      timestamp text not null,
+      raw text not null
+    );
+    create table if not exists protocol_labels (
+      id text primary key,
+      contract_address text not null,
+      chain_id integer,
+      protocol_name text,
+      protocol_category text,
+      source text not null,
+      metadata text not null,
+      created_at text not null
+    );
   `);
 
   const columns = db.prepare("pragma table_info(interactions)").all() as Array<{ name?: string }>;

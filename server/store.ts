@@ -5,6 +5,8 @@ import type {
   EvidenceRecord,
   InteractionRecord,
   LocusTransactionRecord,
+  PriceRecord,
+  ProtocolLabelRecord,
   ReceiptRecord,
   SettlementRecord,
   TokenTransferRecord,
@@ -402,5 +404,89 @@ export class Store {
       raw: JSON.parse(row.raw),
       created_at: row.created_at,
     }));
+  }
+
+  upsertPrice(record: PriceRecord) {
+    const stmt = this.db.prepare(
+      `insert into prices (id, token_address, chain_id, symbol, price_usd, source, timestamp, raw)
+       values (@id, @token_address, @chain_id, @symbol, @price_usd, @source, @timestamp, @raw)
+       on conflict(id) do update set price_usd=excluded.price_usd, timestamp=excluded.timestamp, raw=excluded.raw`,
+    );
+    stmt.run({
+      id: record.id,
+      token_address: record.token_address ?? null,
+      chain_id: record.chain_id ?? null,
+      symbol: record.symbol ?? null,
+      price_usd: record.price_usd,
+      source: record.source,
+      timestamp: record.timestamp,
+      raw: JSON.stringify(record.raw),
+    });
+  }
+
+  getLatestPrice(tokenAddress: string, chainId: number) {
+    const row = this.db
+      .prepare(
+        "select * from prices where lower(token_address) = lower(?) and chain_id = ? order by timestamp desc limit 1",
+      )
+      .get(tokenAddress, chainId) as unknown as (PriceRecord & { raw: string }) | undefined;
+    if (!row) return undefined;
+    return {
+      id: row.id,
+      token_address: row.token_address ?? undefined,
+      chain_id: row.chain_id ?? undefined,
+      symbol: row.symbol ?? undefined,
+      price_usd: row.price_usd,
+      source: row.source,
+      timestamp: row.timestamp,
+      raw: JSON.parse(row.raw),
+    };
+  }
+
+  upsertProtocolLabel(record: ProtocolLabelRecord) {
+    const stmt = this.db.prepare(
+      `insert into protocol_labels (id, contract_address, chain_id, protocol_name, protocol_category, source, metadata, created_at)
+       values (@id, @contract_address, @chain_id, @protocol_name, @protocol_category, @source, @metadata, @created_at)
+       on conflict(id) do update set protocol_name=excluded.protocol_name, protocol_category=excluded.protocol_category, metadata=excluded.metadata`,
+    );
+    stmt.run({
+      id: record.id,
+      contract_address: record.contract_address,
+      chain_id: record.chain_id ?? null,
+      protocol_name: record.protocol_name ?? null,
+      protocol_category: record.protocol_category ?? null,
+      source: record.source,
+      metadata: JSON.stringify(record.metadata),
+      created_at: record.created_at,
+    });
+  }
+
+  getProtocolLabel(contractAddress: string, chainId: number) {
+    const row = this.db
+      .prepare(
+        "select * from protocol_labels where lower(contract_address) = lower(?) and chain_id = ? order by created_at desc limit 1",
+      )
+      .get(contractAddress, chainId) as unknown as (ProtocolLabelRecord & { metadata: string }) | undefined;
+    if (!row) return undefined;
+    return {
+      id: row.id,
+      contract_address: row.contract_address,
+      chain_id: row.chain_id ?? undefined,
+      protocol_name: row.protocol_name ?? undefined,
+      protocol_category: row.protocol_category ?? undefined,
+      source: row.source,
+      metadata: JSON.parse(row.metadata),
+      created_at: row.created_at,
+    };
+  }
+
+  getActiveWallets(daysBack: number) {
+    const cutoffDate = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString();
+    const rows = this.db
+      .prepare(
+        "select distinct wallet_address from interactions where wallet_address is not null and created_at >= ? order by created_at desc",
+      )
+      .all(cutoffDate) as unknown as Array<{ wallet_address: string }>;
+    return rows.map((row) => row.wallet_address);
   }
 }

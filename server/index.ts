@@ -6,10 +6,13 @@ import { extractX402Headers } from "./x402";
 import { normalizeInteraction, normalizeLocusInteraction } from "./normalize";
 import { LocusClient } from "./locus";
 import { fetchBaseTokenTransfers, fetchBaseTx, fetchBaseTxHistory } from "./base";
-import { computeAgentMetrics, computeCounterpartyMetrics } from "./metrics";
+import { computeAgentMetrics, computeCounterpartyMetrics, enrichWithProtocolLabels } from "./metrics";
 import { fetchEasAttestations } from "./eas";
 import { parsePeacReceipt } from "./peac";
 import { deriveControls } from "./controls";
+import { PricingService } from "./pricing";
+import { DuneClient } from "./dune";
+import { JobScheduler } from "./jobs";
 import type { WalletSnapshotRecord } from "./types";
 import type { AppConfig } from "./config";
 
@@ -72,6 +75,66 @@ export function createApi({ config, store }: { config: AppConfig; store: Store }
       ];
       const attestations = Array.from(new Map(attestationRows.map((row) => [row.id, row])).values());
       return ok({ interaction, controls, x402, evidence, settlement, baseTransaction, walletSnapshot, receipts, attestations });
+    },
+    getInteractionEnriched: (id: string) => {
+      const interaction = store.getInteraction(id);
+      if (!interaction) return fail(404, "not_found");
+
+      // Enrich with protocol labels
+      const enrichedWithProtocol = enrichWithProtocolLabels([interaction], store)[0];
+
+      // Compute USD amount
+      let amountUSD: number | null = null;
+      const summary = interaction.summary ?? {};
+      const paymentRequired = (summary as Record<string, unknown>).paymentRequired as Record<string, unknown> | undefined;
+
+      if (paymentRequired) {
+        const rawAmount = typeof paymentRequired.amount === "string" ? Number(paymentRequired.amount) : null;
+        const tokenAddress = typeof paymentRequired.asset === "string" ? paymentRequired.asset : null;
+        const parsedChainId =
+          typeof paymentRequired.network === "number"
+            ? paymentRequired.network
+            : typeof paymentRequired.network === "string"
+              ? Number(paymentRequired.network)
+              : NaN;
+        const chainId = Number.isFinite(parsedChainId) ? parsedChainId : 8453;
+
+        if (rawAmount !== null && Number.isFinite(rawAmount) && tokenAddress) {
+          const price = store.getLatestPrice(tokenAddress, chainId);
+          if (price) {
+            const priceUSD = Number(price.price_usd);
+            if (Number.isFinite(priceUSD)) {
+              amountUSD = rawAmount * priceUSD;
+            }
+          }
+        }
+      }
+
+      const evidence = store.getEvidence(id);
+      const settlement = store.getSettlement(id);
+      const walletSnapshot = store.getWalletSnapshot(id);
+      const receipts = store.listReceiptsByInteraction(id);
+      const controls = deriveControls(interaction, walletSnapshot);
+      const x402 = interaction.summary.x402;
+      const baseTransaction = settlement?.tx_hash ? store.getBaseTransaction(settlement.tx_hash) : undefined;
+      const attestationRows = [
+        ...(interaction.wallet_address ? store.listAttestationsByWallet(interaction.wallet_address) : []),
+        ...(settlement?.tx_hash ? store.listAttestationsByTxHash(settlement.tx_hash) : []),
+      ];
+      const attestations = Array.from(new Map(attestationRows.map((row) => [row.id, row])).values());
+
+      return ok({
+        interaction: enrichedWithProtocol,
+        amountUSD,
+        controls,
+        x402,
+        evidence,
+        settlement,
+        baseTransaction,
+        walletSnapshot,
+        receipts,
+        attestations,
+      });
     },
     ingestX402: async (body: Record<string, unknown> | undefined) => {
       const headers = extractX402Headers((body?.headers ?? {}) as Record<string, string>);
@@ -344,6 +407,8 @@ export function createRouteHandlers(api: ReturnType<typeof createApi>) {
     listInteractions: (_req: unknown, res: JsonResponder) => send(res, api.listInteractions()),
     getInteraction: (req: { params: { id: string | string[] } }, res: JsonResponder) =>
       send(res, api.getInteraction(String(req.params.id))),
+    getInteractionEnriched: (req: { params: { id: string | string[] } }, res: JsonResponder) =>
+      send(res, api.getInteractionEnriched(String(req.params.id))),
     ingestX402: async (req: { body?: Record<string, unknown> }, res: JsonResponder) => send(res, await api.ingestX402(req.body)),
     enrichBase: async (req: { body?: Record<string, unknown> }, res: JsonResponder) => send(res, await api.enrichBase(req.body)),
     baseTx: async (req: { params: { hash: string | string[] } }, res: JsonResponder) => send(res, await api.baseTx(String(req.params.hash))),
@@ -387,6 +452,33 @@ export function createApp(options: CreateAppOptions = {}) {
   const api = createApi({ config, store });
   const handlers = createRouteHandlers(api);
 
+  // Initialize background services
+  const pricingService = new PricingService();
+
+  const duneClient = config.duneApiKey ? new DuneClient(config.duneApiKey) : undefined;
+
+  const jobScheduler = new JobScheduler({
+    config,
+    store,
+    pricingService,
+    duneClient,
+  });
+
+  // Start background jobs
+  jobScheduler.start();
+
+  // Graceful shutdown
+  process.on("SIGTERM", () => {
+    console.log("SIGTERM received, stopping background jobs");
+    jobScheduler.stop();
+  });
+
+  process.on("SIGINT", () => {
+    console.log("SIGINT received, stopping background jobs");
+    jobScheduler.stop();
+    process.exit(0);
+  });
+
   const app = express();
   app.use(cors());
   app.use(express.json({ limit: "1mb" }));
@@ -394,6 +486,7 @@ export function createApp(options: CreateAppOptions = {}) {
   app.get("/api/health", handlers.health as never);
   app.get("/api/interactions", handlers.listInteractions as never);
   app.get("/api/interactions/:id", handlers.getInteraction as never);
+  app.get("/api/interactions/:id/enriched", handlers.getInteractionEnriched as never);
   app.post("/api/ingest/x402", handlers.ingestX402 as never);
   app.post("/api/enrich/base", handlers.enrichBase as never);
   app.get("/api/base/tx/:hash", handlers.baseTx as never);

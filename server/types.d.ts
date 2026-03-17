@@ -163,3 +163,25 @@ export interface ReceiptRecord {
   raw: Record<string, unknown>;
   created_at: string;
 }
+
+export interface PriceRecord {
+  id: string;
+  token_address?: string;
+  chain_id?: number;
+  symbol?: string;
+  price_usd: string;
+  source: "coingecko" | "defillama";
+  timestamp: string;
+  raw: Record<string, unknown>;
+}
+
+export interface ProtocolLabelRecord {
+  id: string;
+  contract_address: string;
+  chain_id?: number;
+  protocol_name?: string;
+  protocol_category?: "dex" | "bridge" | "escrow" | "lending" | "staking" | "other";
+  source: "dune" | "graph" | "defillama";
+  metadata: Record<string, unknown>;
+  created_at: string;
+}

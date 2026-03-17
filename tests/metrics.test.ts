@@ -15,6 +15,10 @@ describe("metrics", () => {
       listAttestationsByWallet: () => [],
       listInteractionsByCounterparty: () => [],
       listWalletsByCounterparty: () => [],
+      getLatestPrice: () => null,
+      getProtocolLabel: () => null,
+      getLatestPrice: () => null,
+      getProtocolLabel: () => null,
     } as const;
     const agent = computeAgentMetrics(store as unknown as import("../server/store").Store, "0xabc");
     expect(agent.throughput.totalInteractions).toBe(0);
@@ -183,6 +187,10 @@ describe("metrics", () => {
       listAttestationsByWallet: () => [],
       listInteractionsByCounterparty: () => [],
       listWalletsByCounterparty: () => [],
+      getLatestPrice: () => null,
+      getProtocolLabel: () => null,
+      getLatestPrice: () => null,
+      getProtocolLabel: () => null,
     } as const;
     const metrics = computeAgentMetrics(store as unknown as import("../server/store").Store, "0xabc");
     expect(metrics.throughput.totalInteractions).toBe(5);
@@ -253,6 +261,10 @@ describe("metrics", () => {
       ],
       listInteractionsByCounterparty: () => [],
       listWalletsByCounterparty: () => [],
+      getLatestPrice: () => null,
+      getProtocolLabel: () => null,
+      getLatestPrice: () => null,
+      getProtocolLabel: () => null,
     } as const;
 
     const metrics = computeAgentMetrics(store as unknown as import("../server/store").Store, "0xabc");
@@ -295,6 +307,8 @@ describe("metrics", () => {
       listAttestationsByWallet: () => [],
       listInteractionsByCounterparty: () => [],
       listWalletsByCounterparty: () => [],
+      getLatestPrice: () => null,
+      getProtocolLabel: () => null,
     } as const;
 
     const metrics = computeAgentMetrics(store as unknown as import("../server/store").Store, "0xabc");
@@ -329,6 +343,8 @@ describe("metrics", () => {
       getBaseTransaction: () => undefined,
       listReceiptsByInteraction: () => [],
       listWalletsByCounterparty: () => [],
+      getLatestPrice: () => null,
+      getProtocolLabel: () => null,
       listBaseTransactionsByWallet: () => [],
       listTokenTransfersByWallet: () => [],
     } as const;
@@ -366,6 +382,8 @@ describe("metrics", () => {
       }),
       listReceiptsByInteraction: () => [],
       listWalletsByCounterparty: () => [],
+      getLatestPrice: () => null,
+      getProtocolLabel: () => null,
       listBaseTransactionsByWallet: () => [],
       listTokenTransfersByWallet: () => [],
     } as const;
@@ -411,6 +429,8 @@ describe("metrics", () => {
       getWalletSnapshot: () => undefined,
       listReceiptsByInteraction: () => [],
       listWalletsByCounterparty: () => [],
+      getLatestPrice: () => null,
+      getProtocolLabel: () => null,
       listBaseTransactionsByWallet: () => [],
       listTokenTransfersByWallet: () => [],
     } as const;
@@ -463,6 +483,8 @@ describe("metrics", () => {
         } as unknown as import("../server/types").InteractionRecord,
       ],
       listWalletsByCounterparty: () => [],
+      getLatestPrice: () => null,
+      getProtocolLabel: () => null,
     } as const;
 
     const agent = computeAgentMetrics(store as unknown as import("../server/store").Store, "0xabc");
@@ -510,6 +532,8 @@ describe("metrics", () => {
       listAttestationsByWallet: () => [],
       listInteractionsByCounterparty: () => [],
       listWalletsByCounterparty: () => [],
+      getLatestPrice: () => null,
+      getProtocolLabel: () => null,
     } as const;
 
     const metrics = computeAgentMetrics(store as unknown as import("../server/store").Store, "0xabc");

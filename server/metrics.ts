@@ -1,5 +1,6 @@
 import type { InteractionRecord, SettlementRecord } from "./types";
 import type { Store } from "./store";
+import type { PricingService } from "./pricing";
 import { deriveControls } from "./controls";
 
 function toDateBucket(iso: string) {
@@ -8,6 +9,19 @@ function toDateBucket(iso: string) {
 
 function toLower(value?: string) {
   return typeof value === "string" ? value.toLowerCase() : undefined;
+}
+
+function toChainId(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  return null;
 }
 
 function coefficientOfVariation(values: number[]) {
@@ -171,6 +185,173 @@ function computeControlsSummary(controls: Array<ReturnType<typeof deriveControls
   };
 }
 
+/**
+ * Extract token address and chain ID from interaction
+ */
+function extractTokenInfo(interaction: InteractionRecord): { address: string; chainId: number } | null {
+  const summary = interaction.summary ?? {};
+  const paymentRequired = (summary as Record<string, unknown>).paymentRequired as Record<string, unknown> | undefined;
+
+  if (paymentRequired) {
+    const asset = paymentRequired.asset;
+    const chainId = toChainId(paymentRequired.network);
+
+    if (typeof asset === "string" && chainId !== null) {
+      return { address: asset, chainId };
+    }
+  }
+
+  // Default to USDC on Base if no payment info
+  return { address: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", chainId: 8453 };
+}
+
+/**
+ * SOLVES PROBLEM 1: USD Normalization
+ * Enriches interactions with USD-normalized payment amounts
+ */
+export async function enrichWithPricing(
+  interactions: InteractionRecord[],
+  pricingService: PricingService | null,
+): Promise<Array<InteractionRecord & { amountUSD: number | null }>> {
+  if (!pricingService) {
+    return interactions.map((i) => ({ ...i, amountUSD: null }));
+  }
+
+  const enriched: Array<InteractionRecord & { amountUSD: number | null }> = [];
+
+  for (const interaction of interactions) {
+    const rawAmount = extractAmount(interaction);
+
+    if (rawAmount === null) {
+      enriched.push({ ...interaction, amountUSD: null });
+      continue;
+    }
+
+    const tokenInfo = extractTokenInfo(interaction);
+    if (!tokenInfo) {
+      enriched.push({ ...interaction, amountUSD: null });
+      continue;
+    }
+
+    const amountUSD = await pricingService.normalizeToUSD(
+      rawAmount,
+      tokenInfo.address,
+      tokenInfo.chainId,
+    );
+
+    enriched.push({ ...interaction, amountUSD });
+  }
+
+  return enriched;
+}
+
+/**
+ * SOLVES PROBLEM 2: Protocol Semantics
+ * Enriches interactions with protocol labels (DEX, bridge, escrow, etc.)
+ */
+export function enrichWithProtocolLabels(
+  interactions: InteractionRecord[],
+  store: Store,
+): Array<InteractionRecord & { protocolName?: string; protocolCategory?: string }> {
+  const enriched: Array<InteractionRecord & { protocolName?: string; protocolCategory?: string }> = [];
+
+  for (const interaction of interactions) {
+    const settlement = store.getSettlement(interaction.id);
+
+    // Try to get contract address from settlement or counterparty
+    let contractAddress: string | undefined;
+
+    if (settlement?.metadata) {
+      const baseTx = (settlement.metadata as Record<string, unknown>).baseTx as Record<string, unknown> | undefined;
+      contractAddress = baseTx?.to as string | undefined;
+    }
+
+    if (!contractAddress && interaction.counterparty) {
+      contractAddress = interaction.counterparty;
+    }
+
+    if (!contractAddress) {
+      enriched.push({ ...interaction });
+      continue;
+    }
+
+    // Lookup protocol label
+    const label = store.getProtocolLabel(contractAddress, 8453);
+
+    enriched.push({
+      ...interaction,
+      protocolName: label?.protocol_name,
+      protocolCategory: label?.protocol_category,
+    });
+  }
+
+  return enriched;
+}
+
+/**
+ * SOLVES PROBLEM 2: Compute protocol diversity metrics
+ */
+function computeProtocolMetrics(
+  enrichedInteractions: Array<InteractionRecord & { protocolName?: string; protocolCategory?: string }>,
+  store: Store,
+) {
+  const protocols = enrichedInteractions
+    .map((i) => i.protocolName)
+    .filter((name): name is string => name !== undefined && name !== null);
+
+  const categories = enrichedInteractions
+    .map((i) => i.protocolCategory)
+    .filter((cat): cat is string => cat !== undefined && cat !== null);
+
+  const protocolCounts = new Map<string, number>();
+  for (const protocol of protocols) {
+    protocolCounts.set(protocol, (protocolCounts.get(protocol) ?? 0) + 1);
+  }
+
+  const categoryCounts = new Map<string, number>();
+  for (const category of categories) {
+    categoryCounts.set(category, (categoryCounts.get(category) ?? 0) + 1);
+  }
+
+  const protocolEntries = Array.from(protocolCounts.entries()).sort((a, b) => b[1] - a[1]);
+  const topProtocol = protocolEntries[0];
+
+  const categoryBreakdown: Record<string, number> = {};
+  for (const [category, count] of categoryCounts) {
+    categoryBreakdown[category] = count;
+  }
+
+  // Compute escrow completion rate (if we have escrow interactions)
+  const escrowInteractions = enrichedInteractions.filter((i) => i.protocolCategory === "escrow");
+  const escrowSettlements = escrowInteractions
+    .map((interaction) => store.getSettlement(interaction.id))
+    .filter((settlement): settlement is SettlementRecord => settlement !== undefined);
+  const escrowCompleted = escrowSettlements.filter((settlement) => settlement.status === "confirmed").length;
+  const escrowCompletionRate =
+    escrowSettlements.length > 0 ? escrowCompleted / escrowSettlements.length : null;
+
+  // Compute staking metrics (if we have staking interactions)
+  const stakingInteractions = enrichedInteractions.filter((i) => i.protocolCategory === "staking");
+  const stakingSettlements = stakingInteractions
+    .map((interaction) => store.getSettlement(interaction.id))
+    .filter((settlement): settlement is SettlementRecord => settlement !== undefined);
+  const stakingMetrics =
+    stakingInteractions.length > 0
+      ? {
+          staked: stakingInteractions.length,
+          slashed: stakingSettlements.filter((settlement) => settlement.status === "failed").length,
+        }
+      : null;
+
+  return {
+    uniqueProtocols: protocolCounts.size,
+    topProtocol: topProtocol ? { name: topProtocol[0], share: topProtocol[1] / enrichedInteractions.length } : null,
+    categoryBreakdown,
+    escrowCompletionRate,
+    stakingMetrics,
+  };
+}
+
 export function computeAgentMetrics(store: Store, wallet: string) {
   const interactions = store.listInteractionsByWallet(wallet);
   const settlements = interactions.map((i) => store.getSettlement(i.id));
@@ -230,6 +411,31 @@ export function computeAgentMetrics(store: Store, wallet: string) {
     .map((interaction) => extractAmount(interaction))
     .filter((value): value is number => value !== null);
 
+  // SOLVES PROBLEM 1: USD Normalization
+  const amountsUSD = interactions
+    .map((interaction) => {
+      const rawAmount = extractAmount(interaction);
+      if (rawAmount === null) return null;
+
+      const tokenInfo = extractTokenInfo(interaction);
+      if (!tokenInfo) return null;
+
+      const price = store.getLatestPrice(tokenInfo.address, tokenInfo.chainId);
+      if (!price) return null;
+
+      const priceUSD = Number(price.price_usd);
+      if (!Number.isFinite(priceUSD)) return null;
+
+      return rawAmount * priceUSD;
+    })
+    .filter((value): value is number => value !== null);
+
+  const totalVolumeUSD = amountsUSD.reduce((sum, v) => sum + v, 0);
+
+  // SOLVES PROBLEM 2: Protocol Semantics
+  const enrichedWithProtocols = enrichWithProtocolLabels(interactions, store);
+  const protocolActivity = computeProtocolMetrics(enrichedWithProtocols, store);
+
   const settlementStats = settlementSuccessRate(settlements);
 
   const evidenceTotal =
@@ -246,6 +452,8 @@ export function computeAgentMetrics(store: Store, wallet: string) {
       repeatRate: interactions.length > 0 ? (interactions.length - counterparties.size) / interactions.length : 0,
     },
     paymentBehavior: summarizeAmounts(amounts),
+    paymentBehaviorUSD: { ...summarizeAmounts(amountsUSD), totalVolumeUSD },
+    protocolActivity,
     settlement: settlementStats,
     settlementLatency: summarizeSeconds(settlementLatenciesSeconds),
     controls,
@@ -284,6 +492,31 @@ export function computeCounterpartyMetrics(store: Store, counterparty: string) {
     .map((interaction) => extractAmount(interaction))
     .filter((value): value is number => value !== null);
 
+  // SOLVES PROBLEM 1: USD Normalization
+  const amountsUSD = interactions
+    .map((interaction) => {
+      const rawAmount = extractAmount(interaction);
+      if (rawAmount === null) return null;
+
+      const tokenInfo = extractTokenInfo(interaction);
+      if (!tokenInfo) return null;
+
+      const price = store.getLatestPrice(tokenInfo.address, tokenInfo.chainId);
+      if (!price) return null;
+
+      const priceUSD = Number(price.price_usd);
+      if (!Number.isFinite(priceUSD)) return null;
+
+      return rawAmount * priceUSD;
+    })
+    .filter((value): value is number => value !== null);
+
+  const totalVolumeUSD = amountsUSD.reduce((sum, v) => sum + v, 0);
+
+  // SOLVES PROBLEM 2: Protocol Semantics
+  const enrichedWithProtocols = enrichWithProtocolLabels(interactions, store);
+  const protocolActivity = computeProtocolMetrics(enrichedWithProtocols, store);
+
   const settlementStats = settlementSuccessRate(settlements);
 
   const wallets = new Map<string, number>();
@@ -296,6 +529,8 @@ export function computeCounterpartyMetrics(store: Store, counterparty: string) {
     counterparty,
     volume: { totalInteractions: interactions.length, uniqueWallets: wallets.size },
     paymentBehavior: summarizeAmounts(amounts),
+    paymentBehaviorUSD: { ...summarizeAmounts(amountsUSD), totalVolumeUSD },
+    protocolActivity,
     fulfillment: settlementStats,
     settlementLatency: summarizeSeconds(settlementLatenciesSeconds),
     controls,

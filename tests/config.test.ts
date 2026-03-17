@@ -12,6 +12,11 @@ const ENV_KEYS = [
   "AFI_LOCUS_AGENT_ID",
   "AFI_EAS_BASE_URL",
   "AFI_EAS_SEPOLIA_URL",
+  "AFI_BLOCKSCOUT_API_KEY",
+  "AFI_COINGECKO_API_KEY",
+  "AFI_DUNE_API_KEY",
+  "AFI_GRAPH_API_KEY",
+  "AFI_ENABLE_BACKGROUND_JOBS",
 ] as const;
 
 function withEnv(next: Partial<Record<(typeof ENV_KEYS)[number], string>>, fn: () => void) {
@@ -40,6 +45,7 @@ describe("config", () => {
       expect(config.dataDir).toBe("./data");
       expect(config.locusBaseUrl).toBe("https://beta-api.paywithlocus.com");
       expect(config.easBaseUrl).toBe("https://base.easscan.org/graphql");
+      expect(config.enableBackgroundJobs).toBe(true);
     });
   });
 
@@ -60,5 +66,24 @@ describe("config", () => {
       },
     );
   });
-});
 
+  it("reads enrichment API keys and background job toggles", () => {
+    withEnv(
+      {
+        AFI_BLOCKSCOUT_API_KEY: "block",
+        AFI_COINGECKO_API_KEY: "gecko",
+        AFI_DUNE_API_KEY: "dune",
+        AFI_GRAPH_API_KEY: "graph",
+        AFI_ENABLE_BACKGROUND_JOBS: "false",
+      },
+      () => {
+        const config = getConfig();
+        expect(config.blockscoutApiKey).toBe("block");
+        expect(config.coingeckoApiKey).toBe("gecko");
+        expect(config.duneApiKey).toBe("dune");
+        expect(config.graphApiKey).toBe("graph");
+        expect(config.enableBackgroundJobs).toBe(false);
+      },
+    );
+  });
+});
