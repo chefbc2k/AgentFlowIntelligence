@@ -12,6 +12,19 @@ type InteractionRow = {
 
 type InteractionDetail = {
   interaction: InteractionRow;
+  x402?: {
+    challenge: { present: boolean; decoded?: { amount?: string; asset?: string; network?: string; payTo?: string } };
+    authorization: { hasSignature: boolean; decoded?: { payer?: string; network?: string } };
+    settlement: {
+      present: boolean;
+      success: boolean | null;
+      txHash?: string;
+      network?: string;
+      payer?: string;
+      payTo?: string;
+      reason?: string;
+    };
+  };
   controls?: {
     amount: number | null;
     currency: string | null;
@@ -22,6 +35,7 @@ type InteractionDetail = {
   };
   evidence: Array<{ id: string; kind: string; payload: unknown; created_at: string }>;
   settlement: { id: string; status: string; tx_hash?: string };
+  baseTransaction?: { tx_hash: string; status: string; block_number?: string; from?: string; to?: string; value?: string };
   walletSnapshot?: {
     wallet_address?: string;
     balance?: string;
@@ -49,6 +63,23 @@ type AgentMetrics = {
   };
   receiptAvailability: { total: number; withReceipt: number; rate: number };
   evidenceDensity: number;
+  onchain?: {
+    transactions: {
+      total: number;
+      confirmed: number;
+      failed: number;
+      unknown: number;
+      uniqueCounterparties: number;
+      topCounterparty: { address: string; share: number } | null;
+    };
+    tokenTransfers: {
+      total: number;
+      inbound: number;
+      outbound: number;
+      uniqueTokens: number;
+      topToken: { symbol: string; share: number } | null;
+    };
+  };
 };
 
 type CounterpartyMetrics = {
@@ -120,6 +151,16 @@ export function App() {
     if (controls.withinAllowance === null && controls.withinMaxTx === null) return "—";
     if (controls.withinAllowance === false || controls.withinMaxTx === false) return "over-limit";
     return "within-limits";
+  };
+
+  const formatHandshakeStatus = (selectedDetail: InteractionDetail) => {
+    const packet = selectedDetail.x402;
+    if (!packet) return "not-captured";
+    if (packet.challenge.present && packet.authorization.hasSignature && packet.settlement.present) return "complete";
+    if (packet.challenge.present && !packet.authorization.hasSignature) return "challenge-only";
+    if (packet.authorization.hasSignature && !packet.settlement.present) return "authorized";
+    if (packet.settlement.present) return "settled";
+    return "not-captured";
   };
 
   return (
@@ -195,6 +236,30 @@ export function App() {
                 <span>Evidence density</span>
                 <strong>{agentMetrics.evidenceDensity.toFixed(1)}</strong>
               </div>
+              {agentMetrics.onchain && (
+                <>
+                  <div>
+                    <span>Onchain txs</span>
+                    <strong>{agentMetrics.onchain.transactions.total}</strong>
+                  </div>
+                  <div>
+                    <span>Onchain counterparties</span>
+                    <strong>{agentMetrics.onchain.transactions.uniqueCounterparties}</strong>
+                  </div>
+                  <div>
+                    <span>Top onchain counterparty</span>
+                    <strong>{agentMetrics.onchain.transactions.topCounterparty?.address ?? "—"}</strong>
+                  </div>
+                  <div>
+                    <span>Token transfers</span>
+                    <strong>{agentMetrics.onchain.tokenTransfers.total}</strong>
+                  </div>
+                  <div>
+                    <span>Top token</span>
+                    <strong>{agentMetrics.onchain.tokenTransfers.topToken?.symbol ?? "—"}</strong>
+                  </div>
+                </>
+              )}
             </div>
           )}
         </section>
@@ -291,6 +356,10 @@ export function App() {
                     <strong>{selected.interaction.id}</strong>
                   </div>
                   <div>
+                    <span>x402 Handshake</span>
+                    <strong>{formatHandshakeStatus(selected)}</strong>
+                  </div>
+                  <div>
                     <span>Status</span>
                     <strong>{selected.settlement?.status ?? "unknown"}</strong>
                   </div>
@@ -307,6 +376,50 @@ export function App() {
                     <strong>{formatControlStatus(selected.controls)}</strong>
                   </div>
                 </div>
+                {selected.x402 && (
+                  <div className="afi-metrics">
+                    <div>
+                      <span>Challenge</span>
+                      <strong>{selected.x402.challenge.present ? "captured" : "missing"}</strong>
+                    </div>
+                    <div>
+                      <span>Authorization</span>
+                      <strong>{selected.x402.authorization.hasSignature ? "signature-recorded" : "missing"}</strong>
+                    </div>
+                    <div>
+                      <span>Settlement</span>
+                      <strong>
+                        {selected.x402.settlement.present
+                          ? selected.x402.settlement.success === null
+                            ? "recorded"
+                            : selected.x402.settlement.success
+                              ? "success"
+                              : "failed"
+                          : "missing"}
+                      </strong>
+                    </div>
+                    <div>
+                      <span>Settlement tx</span>
+                      <strong>{selected.x402.settlement.txHash ?? "—"}</strong>
+                    </div>
+                    <div>
+                      <span>Network</span>
+                      <strong>{selected.x402.settlement.network ?? selected.x402.challenge.decoded?.network ?? "—"}</strong>
+                    </div>
+                    <div>
+                      <span>Pay To</span>
+                      <strong>{selected.x402.settlement.payTo ?? selected.x402.challenge.decoded?.payTo ?? "—"}</strong>
+                    </div>
+                    <div>
+                      <span>Payer</span>
+                      <strong>{selected.x402.settlement.payer ?? selected.x402.authorization.decoded?.payer ?? "—"}</strong>
+                    </div>
+                    <div>
+                      <span>Base correlation</span>
+                      <strong>{selected.baseTransaction ? selected.baseTransaction.status : "missing"}</strong>
+                    </div>
+                  </div>
+                )}
                 <pre>{JSON.stringify(selected, null, 2)}</pre>
                 <a
                   href={`data:application/json,${encodeURIComponent(JSON.stringify(selected))}`}

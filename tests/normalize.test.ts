@@ -42,6 +42,13 @@ describe("normalizeInteraction", () => {
         source: "wallet_snapshot",
       }),
     );
+    expect(bundle.interaction.summary.x402).toEqual(
+      expect.objectContaining({
+        challenge: expect.objectContaining({ present: true }),
+        authorization: expect.objectContaining({ hasSignature: true }),
+        settlement: expect.objectContaining({ txHash: "0xdef", success: null }),
+      }),
+    );
   });
 
   it("handles raw PEAC receipts and missing tx hashes", () => {
@@ -131,6 +138,42 @@ describe("normalizeInteraction", () => {
     expect(bundle.settlement.tx_hash).toBe("0xtx");
     expect(bundle.settlement.status).toBe("pending");
     expect(bundle.evidence.some((row) => row.kind === "base")).toBe(true);
+  });
+
+  it("keeps challenge and settlement distinct inside the canonical packet while preserving raw evidence", () => {
+    const bundle = normalizeInteraction({
+      paymentHeaders: {
+        paymentRequired: "{\"amount\":\"1\",\"network\":\"base\",\"payTo\":\"0xmerchant\"}",
+        paymentSignature: "{\"payer\":\"0xpayer\"}",
+        paymentResponse: "{\"success\":true,\"transaction\":\"0xtx\",\"payer\":\"0xpayer\"}",
+      },
+    });
+
+    expect(bundle.interaction.summary.x402).toEqual(
+      expect.objectContaining({
+        challenge: expect.objectContaining({
+          present: true,
+          decoded: expect.objectContaining({ amount: "1", payTo: "0xmerchant" }),
+        }),
+        authorization: expect.objectContaining({
+          hasSignature: true,
+          decoded: expect.objectContaining({ payer: "0xpayer" }),
+        }),
+        settlement: expect.objectContaining({
+          present: true,
+          success: true,
+          txHash: "0xtx",
+          payer: "0xpayer",
+          payTo: "0xmerchant",
+        }),
+      }),
+    );
+    expect(bundle.evidence.find((row) => row.kind === "x402")?.payload).toEqual(
+      expect.objectContaining({
+        paymentRequired: expect.objectContaining({ amount: "1" }),
+        paymentResponse: expect.objectContaining({ success: true }),
+      }),
+    );
   });
 
   it("infers service identity from locus metadata provider/endpoint", () => {

@@ -146,7 +146,9 @@ describe("store", () => {
     expect(store.getWalletSnapshot("missing")).toBeUndefined();
 
     expect(store.listBaseTransactionsByWallet("0xwallet")).toHaveLength(2);
+    expect(store.listBaseTransactionsByWallet("0xWALLET")).toHaveLength(2);
     expect(store.listTokenTransfersByWallet("0xwallet")).toHaveLength(1);
+    expect(store.listTokenTransfersByWallet("0xWALLET")).toHaveLength(1);
     expect(store.listAttestationsByWallet("0xwallet")).toHaveLength(1);
     expect(store.listAttestationsByWallet("0xWALLET")).toHaveLength(1);
     expect(store.listAttestationsByTxHash("0xTX")).toHaveLength(1);

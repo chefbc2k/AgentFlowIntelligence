@@ -64,15 +64,21 @@ export function createApi({ config, store }: { config: AppConfig; store: Store }
       const walletSnapshot = store.getWalletSnapshot(id);
       const receipts = store.listReceiptsByInteraction(id);
       const controls = deriveControls(interaction, walletSnapshot);
+      const x402 = interaction.protocol === "x402" ? interaction.summary.x402 : undefined;
+      const baseTransaction = settlement?.tx_hash ? store.getBaseTransaction(settlement.tx_hash) : undefined;
       const attestationRows = [
         ...(interaction.wallet_address ? store.listAttestationsByWallet(interaction.wallet_address) : []),
         ...(settlement?.tx_hash ? store.listAttestationsByTxHash(settlement.tx_hash) : []),
       ];
       const attestations = Array.from(new Map(attestationRows.map((row) => [row.id, row])).values());
-      return ok({ interaction, controls, evidence, settlement, walletSnapshot, receipts, attestations });
+      return ok({ interaction, controls, x402, evidence, settlement, baseTransaction, walletSnapshot, receipts, attestations });
     },
     ingestX402: async (body: Record<string, unknown> | undefined) => {
       const headers = extractX402Headers((body?.headers ?? {}) as Record<string, string>);
+      const paymentSignature = typeof body?.paymentSignature === "string" ? body.paymentSignature : undefined;
+      if (!headers.paymentSignature && paymentSignature) {
+        headers.paymentSignature = paymentSignature;
+      }
       const locusMetadata = body?.locusMetadata ?? undefined;
       const txHash = body?.txHash ?? undefined;
       const agentId = body?.agentId ?? config.locusAgentId;
@@ -124,6 +130,7 @@ export function createApi({ config, store }: { config: AppConfig; store: Store }
       if (bundleTxHash) {
         try {
           const baseTx = await fetchBaseTx(bundleTxHash, { etherscanApiKey: config.etherscanApiKey });
+          const baseCreatedAt = baseTx.confirmedAt ?? new Date().toISOString();
           store.upsertBaseTransaction({
             tx_hash: baseTx.txHash,
             status: baseTx.status,
@@ -132,7 +139,7 @@ export function createApi({ config, store }: { config: AppConfig; store: Store }
             to: baseTx.to,
             value: baseTx.value,
             raw: baseTx.raw,
-            created_at: new Date().toISOString(),
+            created_at: baseCreatedAt,
           });
           store.upsertSettlement({
             ...bundle.settlement,
@@ -144,7 +151,7 @@ export function createApi({ config, store }: { config: AppConfig; store: Store }
               id: `${bundle.interaction.id}:base_tx`,
               interaction_id: bundle.interaction.id,
               kind: "base_tx",
-              created_at: new Date().toISOString(),
+              created_at: baseCreatedAt,
               payload: baseTx.raw,
             },
           ]);

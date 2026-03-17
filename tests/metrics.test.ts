@@ -9,6 +9,8 @@ describe("metrics", () => {
       getEvidence: () => [],
       getWalletSnapshot: () => undefined,
       getBaseTransaction: () => undefined,
+      listBaseTransactionsByWallet: () => [],
+      listTokenTransfersByWallet: () => [],
       listReceiptsByInteraction: () => [],
       listAttestationsByWallet: () => [],
       listInteractionsByCounterparty: () => [],
@@ -20,6 +22,8 @@ describe("metrics", () => {
     expect(agent.evidenceDensity).toBe(0);
     expect(agent.controls.overall.total).toBe(0);
     expect(agent.receiptAvailability.total).toBe(0);
+    expect(agent.onchain.transactions.total).toBe(0);
+    expect(agent.onchain.tokenTransfers.total).toBe(0);
 
     const counterparty = computeCounterpartyMetrics(store as unknown as import("../server/store").Store, "svc");
     expect(counterparty.volume.totalInteractions).toBe(0);
@@ -135,6 +139,46 @@ describe("metrics", () => {
           : txHash === "0xtx2"
             ? { tx_hash: "0xtx2", status: "confirmed", raw: {}, created_at: "2024-01-02T02:00:10Z" }
             : undefined,
+      listBaseTransactionsByWallet: () => [
+        { tx_hash: "0xtx", status: "confirmed", from: "0xabc", to: "0xdef", raw: {}, created_at: "2024-01-01T00:00:10Z" },
+        { tx_hash: "0xtx2", status: "failed", from: "0xdef", to: "0xabc", raw: {}, created_at: "2024-01-02T00:00:10Z" },
+        { tx_hash: "0xtx3", status: "unknown", from: "0xabc", to: "0xghi", raw: {}, created_at: "2024-01-03T00:00:10Z" },
+      ],
+      listTokenTransfersByWallet: () => [
+        {
+          id: "t1",
+          tx_hash: "0xtx",
+          token_address: "0xusdc",
+          token_symbol: "USDC",
+          from: "0xdef",
+          to: "0xabc",
+          value: "1",
+          raw: {},
+          created_at: "2024-01-01T00:00:11Z",
+        },
+        {
+          id: "t2",
+          tx_hash: "0xtx2",
+          token_address: "0xusdc",
+          token_symbol: "USDC",
+          from: "0xabc",
+          to: "0xghi",
+          value: "2",
+          raw: {},
+          created_at: "2024-01-02T00:00:11Z",
+        },
+        {
+          id: "t3",
+          tx_hash: "0xtx3",
+          token_address: "0xother",
+          token_symbol: "OTHER",
+          from: "0xabc",
+          to: "0xdef",
+          value: "3",
+          raw: {},
+          created_at: "2024-01-03T00:00:11Z",
+        },
+      ],
       listReceiptsByInteraction: () => [],
       listAttestationsByWallet: () => [],
     } as const;
@@ -150,6 +194,18 @@ describe("metrics", () => {
     expect(metrics.controls.maxTx.overLimit).toBe(1);
     expect(metrics.settlementLatency.total).toBe(2);
     expect(metrics.settlementLatency.medianSeconds).toBeCloseTo((10 + 10) / 2);
+    expect(metrics.onchain.transactions.total).toBe(3);
+    expect(metrics.onchain.transactions.confirmed).toBe(1);
+    expect(metrics.onchain.transactions.failed).toBe(1);
+    expect(metrics.onchain.transactions.unknown).toBe(1);
+    expect(metrics.onchain.transactions.uniqueCounterparties).toBe(2);
+    expect(metrics.onchain.transactions.topCounterparty?.address).toBe("0xdef");
+    expect(metrics.onchain.transactions.topCounterparty?.share).toBeCloseTo(2 / 3);
+    expect(metrics.onchain.tokenTransfers.total).toBe(3);
+    expect(metrics.onchain.tokenTransfers.inbound).toBe(1);
+    expect(metrics.onchain.tokenTransfers.outbound).toBe(2);
+    expect(metrics.onchain.tokenTransfers.uniqueTokens).toBe(2);
+    expect(metrics.onchain.tokenTransfers.topToken?.symbol).toBe("USDC");
   });
 
   it("includes receipts and attestations in evidence density", () => {
@@ -185,6 +241,8 @@ describe("metrics", () => {
           : [{ id: "e3", interaction_id: "i2", kind: "x402", payload: {}, created_at: "2024-01-01T00:00:00Z" }],
       getWalletSnapshot: () => undefined,
       getBaseTransaction: () => undefined,
+      listBaseTransactionsByWallet: () => [],
+      listTokenTransfersByWallet: () => [],
       listReceiptsByInteraction: (id: string) =>
         id === "i1" ? [{ id: "r1", raw: {}, created_at: "2024-01-01T00:00:00Z" }] : [],
       listAttestationsByWallet: () => [
@@ -229,6 +287,8 @@ describe("metrics", () => {
       getWalletSnapshot: () => undefined,
       getBaseTransaction: (txHash: string) =>
         txHash === "i2" ? { tx_hash: "i2", status: "confirmed", raw: {}, created_at: "2024-01-01T00:00:05Z" } : undefined,
+      listBaseTransactionsByWallet: () => [],
+      listTokenTransfersByWallet: () => [],
       listReceiptsByInteraction: () => [],
       listAttestationsByWallet: () => [],
     } as const;
@@ -374,6 +434,8 @@ describe("metrics", () => {
       getEvidence: () => [],
       getWalletSnapshot: () => undefined,
       getBaseTransaction: () => undefined,
+      listBaseTransactionsByWallet: () => [],
+      listTokenTransfersByWallet: () => [],
       listReceiptsByInteraction: () => [],
       listAttestationsByWallet: () => [],
       listInteractionsByCounterparty: () => [

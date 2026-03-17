@@ -318,7 +318,9 @@ export class Store {
 
   listBaseTransactionsByWallet(wallet: string) {
     const rows = this.db
-      .prepare("select * from base_transactions where from_address = ? or to_address = ? order by created_at desc")
+      .prepare(
+        "select * from base_transactions where lower(from_address) = lower(?) or lower(to_address) = lower(?) order by created_at desc",
+      )
       .all(wallet, wallet) as unknown as Array<
       BaseTransactionRecord & { raw: string; from_address?: string; to_address?: string }
     >;
@@ -336,7 +338,9 @@ export class Store {
 
   listTokenTransfersByWallet(wallet: string) {
     const rows = this.db
-      .prepare("select * from token_transfers where from_address = ? or to_address = ? order by created_at desc")
+      .prepare(
+        "select * from token_transfers where lower(from_address) = lower(?) or lower(to_address) = lower(?) order by created_at desc",
+      )
       .all(wallet, wallet) as unknown as Array<
       TokenTransferRecord & { raw: string; from_address?: string; to_address?: string }
     >;

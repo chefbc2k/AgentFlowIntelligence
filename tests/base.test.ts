@@ -28,10 +28,33 @@ describe("base adapter", () => {
 
   it("fetches tx by hash via etherscan", async () => {
     const payload = { result: { hash: "0x1", blockNumber: "0x10", from: "0xaaa", to: "0xbbb", value: "1" } };
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(okJson(payload)));
+    const fetchMock = vi.fn(async (input: string) => {
+      const url = new URL(input);
+      const action = url.searchParams.get("action");
+      if (action === "eth_getTransactionByHash") return okJson(payload);
+      if (action === "eth_getBlockByNumber") return okJson({ result: { timestamp: "0x10" } });
+      return notOk(500);
+    });
+    vi.stubGlobal("fetch", fetchMock);
     const result = await fetchBaseTx("0x1", { etherscanApiKey: "key" });
     expect(result.status).toBe("confirmed");
     expect(result.txHash).toBe("0x1");
+    expect(result.confirmedAt).toBe("1970-01-01T00:00:16.000Z");
+  });
+
+  it("keeps tx lookup working when block timestamp enrichment fails", async () => {
+    const payload = { result: { hash: "0x1", blockNumber: "0x10", from: "0xaaa", to: "0xbbb", value: "1" } };
+    const fetchMock = vi.fn(async (input: string) => {
+      const url = new URL(input);
+      const action = url.searchParams.get("action");
+      if (action === "eth_getTransactionByHash") return okJson(payload);
+      if (action === "eth_getBlockByNumber") return notOk(503);
+      return notOk(500);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await fetchBaseTxFromEtherscan("key", "0x1");
+    expect(result.status).toBe("confirmed");
+    expect(result.confirmedAt).toBeUndefined();
   });
 
   it("marks tx as unknown when etherscan has no block number", async () => {

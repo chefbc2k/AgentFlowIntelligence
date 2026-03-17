@@ -1,4 +1,12 @@
-import { interactionIdFromParts, parseJsonHeader } from "./x402";
+import {
+  buildX402Packet,
+  decodePaymentPayload,
+  decodePaymentRequired,
+  decodeSettlementResponse,
+  extractSettlementSuccess,
+  extractSettlementTxHash,
+  interactionIdFromParts,
+} from "./x402";
 import { parsePeacReceipt } from "./peac";
 import { deriveControls } from "./controls";
 import type { EvidenceRecord, InteractionRecord, SettlementRecord, WalletSnapshotRecord } from "./types";
@@ -24,28 +32,6 @@ export interface NormalizedBundle {
   interaction: InteractionRecord;
   settlement: SettlementRecord;
   evidence: EvidenceRecord[];
-}
-
-function extractSettlementTxHash(paymentResponse?: Record<string, unknown>): string | undefined {
-  if (!paymentResponse) return undefined;
-
-  const candidates = ["transaction", "txHash", "tx", "hash"] as const;
-  for (const key of candidates) {
-    const value = paymentResponse[key];
-    if (typeof value === "string") return value;
-    if (value && typeof value === "object") {
-      const nested = value as Record<string, unknown>;
-      if (typeof nested.hash === "string") return nested.hash;
-    }
-  }
-
-  return undefined;
-}
-
-function extractSettlementSuccess(paymentResponse?: Record<string, unknown>): boolean | undefined {
-  if (!paymentResponse) return undefined;
-  const value = paymentResponse.success;
-  return typeof value === "boolean" ? value : undefined;
 }
 
 function inferServiceFromUrl(raw?: string): { counterparty?: string; service?: string } {
@@ -77,13 +63,14 @@ function inferServiceFromLocusMetadata(metadata?: Record<string, unknown>): { co
 
 export function normalizeInteraction(input: NormalizeInput): NormalizedBundle {
   const createdAt = new Date().toISOString();
-  const paymentRequired = parseJsonHeader(input.paymentHeaders.paymentRequired);
-  const paymentSignature = parseJsonHeader(input.paymentHeaders.paymentSignature);
-  const paymentResponse = parseJsonHeader(input.paymentHeaders.paymentResponse);
+  const paymentRequired = decodePaymentRequired(input.paymentHeaders.paymentRequired);
+  const paymentSignature = decodePaymentPayload(input.paymentHeaders.paymentSignature);
+  const paymentResponse = decodeSettlementResponse(input.paymentHeaders.paymentResponse);
   const peacReceipt = parsePeacReceipt(input.paymentHeaders.peacReceipt);
   const inferredTxHash = extractSettlementTxHash(paymentResponse);
   const txHash = input.txHash ?? inferredTxHash;
   const settlementSuccess = extractSettlementSuccess(paymentResponse);
+  const x402 = buildX402Packet(input.paymentHeaders, { txHash });
   const urlHints = inferServiceFromUrl(input.url);
   const locusHints = inferServiceFromLocusMetadata(input.locusMetadata);
   const counterparty = input.counterparty ?? urlHints.counterparty ?? locusHints.counterparty;
@@ -108,6 +95,7 @@ export function normalizeInteraction(input: NormalizeInput): NormalizedBundle {
       paymentSignature,
       paymentResponse,
       txHash,
+      x402,
     },
   };
 

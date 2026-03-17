@@ -251,6 +251,8 @@ describe("server api logic", () => {
     );
     expect((detail.body as { receipts: unknown[] }).receipts).toHaveLength(1);
     expect((detail.body as { settlement: { status: string } }).settlement.status).toBe("confirmed");
+    expect((detail.body as { x402: { challenge: { present: boolean } } }).x402.challenge.present).toBe(true);
+    expect((detail.body as { baseTransaction: { tx_hash: string } }).baseTransaction.tx_hash).toBe("0xtx");
     expect((detail.body as { controls: { amount: number | null; source: string } }).controls).toEqual(
       expect.objectContaining({ amount: 1, source: "wallet_snapshot" }),
     );
@@ -335,9 +337,60 @@ describe("server api logic", () => {
     expect((detail.body as { settlement: { status: string; tx_hash?: string } }).settlement).toEqual(
       expect.objectContaining({ status: "confirmed", tx_hash: "0xtx" }),
     );
+    expect((detail.body as { x402: { settlement: { txHash?: string; present: boolean } } }).x402).toEqual(
+      expect.objectContaining({
+        settlement: expect.objectContaining({ present: true, txHash: "0xtx" }),
+      }),
+    );
     expect(
       (detail.body as { evidence: Array<{ kind: string }> }).evidence.some((row) => row.kind === "base_tx"),
     ).toBe(true);
+  });
+
+  it("returns x402 packet sections for challenge-only then full handshake ingestion", async () => {
+    stubFetchForHappyPath();
+    const store = createTestStore();
+    const api = createApi({
+      config: {
+        port: "0",
+        dbPath: ":memory:",
+        dataDir: "/tmp",
+        locusBaseUrl: "https://beta-api.paywithlocus.com",
+        easBaseUrl: "https://base.easscan.org/graphql",
+        easSepoliaUrl: "https://base-sepolia.easscan.org/graphql",
+      },
+      store,
+    });
+
+    const challengeOnly = await api.ingestX402({
+      headers: { "payment-required": "{\"amount\":\"1\",\"network\":\"base\"}" },
+      url: "https://example.com/paid",
+    });
+    const challengeDetail = api.getInteraction((challengeOnly.body as { interactionId: string }).interactionId);
+    expect((challengeDetail.body as { x402: { challenge: { present: boolean }; settlement: { present: boolean } } }).x402).toEqual(
+      expect.objectContaining({
+        challenge: expect.objectContaining({ present: true }),
+        settlement: expect.objectContaining({ present: false }),
+      }),
+    );
+    expect((challengeDetail.body as { baseTransaction?: unknown }).baseTransaction).toBeUndefined();
+
+    const settled = await api.ingestX402({
+      headers: {
+        "payment-required": "{\"amount\":\"1\",\"network\":\"base\",\"payTo\":\"0xmerchant\"}",
+        "payment-response": "{\"success\":true,\"transaction\":\"0xtx\",\"payer\":\"0xpayer\"}",
+      },
+      paymentSignature: "{\"payer\":\"0xpayer\"}",
+      url: "https://example.com/paid",
+    });
+    const settledDetail = api.getInteraction((settled.body as { interactionId: string }).interactionId);
+    expect((settledDetail.body as { x402: { authorization: { hasSignature: boolean }; settlement: { success: boolean | null; txHash?: string } } }).x402).toEqual(
+      expect.objectContaining({
+        authorization: expect.objectContaining({ hasSignature: true }),
+        settlement: expect.objectContaining({ success: true, txHash: "0xtx" }),
+      }),
+    );
+    expect((settledDetail.body as { baseTransaction: { status: string } }).baseTransaction.status).toBe("confirmed");
   });
 
   it("sanitizes non-string ids and retains string metadata fields", async () => {

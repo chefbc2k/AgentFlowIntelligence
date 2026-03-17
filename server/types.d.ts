@@ -26,6 +26,78 @@ export interface EvidenceRecord {
   created_at: string;
 }
 
+export interface X402PaymentRequired {
+  amount?: string;
+  asset?: string;
+  network?: string;
+  payTo?: string;
+  error?: string;
+  reason?: string;
+  [key: string]: unknown;
+}
+
+export interface X402PaymentPayload {
+  signature?: string;
+  payer?: string;
+  network?: string;
+  [key: string]: unknown;
+}
+
+export interface X402SettlementResponse {
+  success?: boolean;
+  transaction?: string | { hash?: string; [key: string]: unknown };
+  txHash?: string;
+  tx?: string;
+  hash?: string;
+  network?: string;
+  payer?: string;
+  payTo?: string;
+  error?: string;
+  reason?: string;
+  message?: string;
+  [key: string]: unknown;
+}
+
+export interface DecodedX402Section<TDecoded> {
+  present: boolean;
+  raw?: string;
+  decoded?: TDecoded;
+}
+
+export interface X402Correlation {
+  txHash?: string;
+  network?: string;
+  payer?: string;
+  payTo?: string;
+  success: boolean | null;
+  reason?: string;
+}
+
+export interface X402Packet {
+  challenge: DecodedX402Section<X402PaymentRequired>;
+  authorization: DecodedX402Section<X402PaymentPayload> & { hasSignature: boolean };
+  settlement: DecodedX402Section<X402SettlementResponse> & X402Correlation;
+}
+
+export interface X402TranscriptStep {
+  status: number;
+  headers: {
+    paymentRequired?: string;
+    paymentSignature?: string;
+    paymentResponse?: string;
+    peacReceipt?: string;
+  };
+}
+
+export interface X402Transcript {
+  requestUrl: string;
+  challenge?: X402TranscriptStep;
+  authorization?: {
+    paymentSignature?: string;
+  };
+  settlement?: X402TranscriptStep;
+}
+
 export interface WalletSnapshotRecord {
   id: string;
   interaction_id: string;

@@ -2,10 +2,53 @@ export interface BaseTxResult {
   txHash: string;
   status: "confirmed" | "failed" | "unknown";
   blockNumber?: string;
+  confirmedAt?: string;
   from?: string;
   to?: string;
   value?: string;
   raw: Record<string, unknown>;
+}
+
+function parseHexTimestamp(timestampHex?: string): string | undefined {
+  if (!timestampHex || typeof timestampHex !== "string") return undefined;
+  const normalized = timestampHex.startsWith("0x") ? timestampHex : `0x${timestampHex}`;
+  const seconds = Number.parseInt(normalized, 16);
+  if (!Number.isFinite(seconds) || seconds <= 0) return undefined;
+  return new Date(seconds * 1000).toISOString();
+}
+
+async function fetchBlockTimestampFromEtherscan(apiKey: string, blockNumberHex: string): Promise<string | undefined> {
+  const url = new URL("https://api.etherscan.io/v2/api");
+  url.searchParams.set("chainid", "8453");
+  url.searchParams.set("module", "proxy");
+  url.searchParams.set("action", "eth_getBlockByNumber");
+  url.searchParams.set("tag", blockNumberHex);
+  url.searchParams.set("boolean", "false");
+  url.searchParams.set("apikey", apiKey);
+
+  const response = await fetch(url.toString());
+  if (!response.ok) {
+    throw new Error(`Etherscan failed: ${response.status}`);
+  }
+  const payload = await response.json();
+  const result = payload?.result as { timestamp?: string } | null;
+  return parseHexTimestamp(result?.timestamp);
+}
+
+async function fetchBlockTimestampFromBlockscout(blockNumberHex: string): Promise<string | undefined> {
+  const url = new URL("https://base.blockscout.com/api");
+  url.searchParams.set("module", "proxy");
+  url.searchParams.set("action", "eth_getBlockByNumber");
+  url.searchParams.set("tag", blockNumberHex);
+  url.searchParams.set("boolean", "false");
+
+  const response = await fetch(url.toString());
+  if (!response.ok) {
+    throw new Error(`Blockscout failed: ${response.status}`);
+  }
+  const payload = await response.json();
+  const result = payload?.result as { timestamp?: string } | null;
+  return parseHexTimestamp(result?.timestamp);
 }
 
 export async function fetchBaseTxFromEtherscan(apiKey: string, txHash: string): Promise<BaseTxResult> {
@@ -25,10 +68,21 @@ export async function fetchBaseTxFromEtherscan(apiKey: string, txHash: string): 
   if (!result?.hash) {
     return { txHash, status: "unknown", raw: payload as Record<string, unknown> };
   }
+
+  let confirmedAt: string | undefined;
+  if (result.blockNumber) {
+    try {
+      confirmedAt = await fetchBlockTimestampFromEtherscan(apiKey, result.blockNumber);
+    } catch {
+      confirmedAt = undefined;
+    }
+  }
+
   return {
     txHash,
     status: result.blockNumber ? "confirmed" : "unknown",
     blockNumber: result.blockNumber,
+    confirmedAt,
     from: result.from,
     to: result.to,
     value: result.value,
@@ -50,10 +104,21 @@ export async function fetchBaseTxFromBlockscout(txHash: string): Promise<BaseTxR
   if (!result?.hash) {
     return { txHash, status: "unknown", raw: payload as Record<string, unknown> };
   }
+
+  let confirmedAt: string | undefined;
+  if (result.blockNumber) {
+    try {
+      confirmedAt = await fetchBlockTimestampFromBlockscout(result.blockNumber);
+    } catch {
+      confirmedAt = undefined;
+    }
+  }
+
   return {
     txHash,
     status: result.blockNumber ? "confirmed" : "unknown",
     blockNumber: result.blockNumber,
+    confirmedAt,
     from: result.from,
     to: result.to,
     value: result.value,

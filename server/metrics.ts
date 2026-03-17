@@ -6,6 +6,10 @@ function toDateBucket(iso: string) {
   return iso.slice(0, 10);
 }
 
+function toLower(value?: string) {
+  return typeof value === "string" ? value.toLowerCase() : undefined;
+}
+
 function coefficientOfVariation(values: number[]) {
   const mean = values.length === 0 ? 0 : values.reduce((sum, v) => sum + v, 0) / values.length;
   if (mean === 0) return 0;
@@ -69,6 +73,65 @@ function summarizeSeconds(values: number[]) {
   };
 }
 
+function computeOnchainMetrics(store: Store, wallet: string) {
+  const walletLower = wallet.toLowerCase();
+  const baseTxs = store.listBaseTransactionsByWallet(wallet);
+  const transfers = store.listTokenTransfersByWallet(wallet);
+
+  const txStatus = { confirmed: 0, failed: 0, unknown: 0 };
+  const txCounterparties = new Map<string, number>();
+  for (const tx of baseTxs) {
+    if (tx.status === "confirmed") txStatus.confirmed += 1;
+    else if (tx.status === "failed") txStatus.failed += 1;
+    else txStatus.unknown += 1;
+
+    const from = toLower(tx.from);
+    const to = toLower(tx.to);
+    const counterparty = from === walletLower ? to : to === walletLower ? from : undefined;
+    if (counterparty) {
+      txCounterparties.set(counterparty, (txCounterparties.get(counterparty) ?? 0) + 1);
+    }
+  }
+
+  const txEntries = Array.from(txCounterparties.entries()).sort((a, b) => b[1] - a[1]);
+  const topTxCounterparty = txEntries[0];
+
+  const transferTokens = new Map<string, number>();
+  let inboundTransfers = 0;
+  let outboundTransfers = 0;
+  for (const transfer of transfers) {
+    const from = toLower(transfer.from);
+    const to = toLower(transfer.to);
+    if (to === walletLower && from !== walletLower) inboundTransfers += 1;
+    else if (from === walletLower && to !== walletLower) outboundTransfers += 1;
+
+    const token = transfer.token_symbol ?? transfer.token_address ?? "unknown";
+    transferTokens.set(token, (transferTokens.get(token) ?? 0) + 1);
+  }
+
+  const tokenEntries = Array.from(transferTokens.entries()).sort((a, b) => b[1] - a[1]);
+  const topToken = tokenEntries[0];
+  const tokenTotal = transfers.length || 1;
+
+  return {
+    transactions: {
+      total: baseTxs.length,
+      ...txStatus,
+      uniqueCounterparties: txCounterparties.size,
+      topCounterparty: topTxCounterparty
+        ? { address: topTxCounterparty[0], share: topTxCounterparty[1] / (baseTxs.length || 1) }
+        : null,
+    },
+    tokenTransfers: {
+      total: transfers.length,
+      inbound: inboundTransfers,
+      outbound: outboundTransfers,
+      uniqueTokens: transferTokens.size,
+      topToken: topToken ? { symbol: topToken[0], share: topToken[1] / tokenTotal } : null,
+    },
+  };
+}
+
 function computeControlsSummary(controls: Array<ReturnType<typeof deriveControls>>) {
   const approvalKnown = controls.filter((c) => c.approvalRequired !== null);
   const approvalRequired = approvalKnown.filter((c) => c.approvalRequired).length;
@@ -116,6 +179,7 @@ export function computeAgentMetrics(store: Store, wallet: string) {
   const evidenceCounts = interactions.map((i) => store.getEvidence(i.id).length);
   const receiptCounts = interactions.map((i) => store.listReceiptsByInteraction(i.id).length);
   const attestationCount = new Set(store.listAttestationsByWallet(wallet).map((row) => row.id)).size;
+  const onchain = computeOnchainMetrics(store, wallet);
 
   const controlFacts = interactions.map((i) => deriveControls(i, store.getWalletSnapshot(i.id)));
   const controls = computeControlsSummary(controlFacts);
@@ -189,6 +253,7 @@ export function computeAgentMetrics(store: Store, wallet: string) {
     controls,
     receiptAvailability,
     evidenceDensity,
+    onchain,
   };
 }
 

@@ -58,6 +58,11 @@ describe("AFI UI", () => {
 
     const detailWithin = {
       interaction: interactions[0],
+      x402: {
+        challenge: { present: true, decoded: { amount: "1", network: "base", payTo: "0xmerchant" } },
+        authorization: { hasSignature: true, decoded: { payer: "0xpayer" } },
+        settlement: { present: true, success: true, txHash: "0xtx", network: "base", payer: "0xpayer", payTo: "0xmerchant" },
+      },
       controls: {
         amount: 1,
         currency: "USDC",
@@ -68,6 +73,7 @@ describe("AFI UI", () => {
       },
       evidence: [{ id: "e1", kind: "x402", payload: { ok: true }, created_at: "2024-01-01T00:00:00Z" }],
       settlement: { id: "s1", status: "confirmed", tx_hash: "0xtx" },
+      baseTransaction: { tx_hash: "0xtx", status: "confirmed", from: "0xaaa", to: "0xmerchant" },
       walletSnapshot: { wallet_address: "0xwallet", approvals_required: true },
       receipts: [{ id: "r1", raw: { ok: true }, created_at: "2024-01-01T00:00:00Z" }],
     };
@@ -97,9 +103,14 @@ describe("AFI UI", () => {
 
     expect(await screen.findByText(detailWithin.interaction.id)).toBeInTheDocument();
     expect(screen.getByText("confirmed")).toBeInTheDocument();
+    expect(screen.getByText("complete")).toBeInTheDocument();
     expect(screen.getByText("Download JSON")).toHaveAttribute("download", `afi-${detailWithin.interaction.id}.json`);
     expect(screen.getByText("within-limits")).toBeInTheDocument();
     expect(screen.getByText("1 USDC")).toBeInTheDocument();
+    expect(screen.getByText("captured")).toBeInTheDocument();
+    expect(screen.getByText("signature-recorded")).toBeInTheDocument();
+    expect(screen.getAllByText("success").length).toBeGreaterThan(0);
+    expect(screen.getByText("0xtx")).toBeInTheDocument();
 
     within(interactionsList).getAllByRole("button", { name: "View" })[0]?.click();
     expect(await screen.findByText("over-limit")).toBeInTheDocument();
@@ -136,6 +147,23 @@ describe("AFI UI", () => {
       },
       receiptAvailability: { total: 12, withReceipt: 6, rate: 0.5 },
       evidenceDensity: 3.25,
+      onchain: {
+        transactions: {
+          total: 9,
+          confirmed: 8,
+          failed: 1,
+          unknown: 0,
+          uniqueCounterparties: 3,
+          topCounterparty: { address: "0xsvc", share: 0.5 },
+        },
+        tokenTransfers: {
+          total: 4,
+          inbound: 1,
+          outbound: 3,
+          uniqueTokens: 2,
+          topToken: { symbol: "USDC", share: 0.75 },
+        },
+      },
     };
 
     const counterpartyMetrics = {
@@ -163,6 +191,8 @@ describe("AFI UI", () => {
 
     expect(await screen.findByText("75%")).toBeInTheDocument();
     expect(await within(counterpartySection).findByText("50%")).toBeInTheDocument();
+    expect(screen.getByText("Onchain txs").parentElement?.querySelector("strong")).toHaveTextContent("9");
+    expect(screen.getByText("Top token").parentElement?.querySelector("strong")).toHaveTextContent("USDC");
     expect(screen.getAllByText("—").length).toBeGreaterThan(0);
 
     fetchMock.mockRejectedValueOnce(new Error("counterparty"));
@@ -220,6 +250,11 @@ describe("AFI UI", () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse({
         interaction: { id: "i1" },
+        x402: {
+          challenge: { present: true },
+          authorization: { hasSignature: false },
+          settlement: { present: false, success: null },
+        },
         controls: {
           amount: null,
           currency: null,
@@ -241,6 +276,7 @@ describe("AFI UI", () => {
     const statusLabel = screen.getByText("Status");
     expect(statusLabel.parentElement?.querySelector("strong")).toHaveTextContent("unknown");
     expect(screen.getByText("Controls").parentElement?.querySelector("strong")).toHaveTextContent("—");
+    expect(screen.getByText("challenge-only")).toBeInTheDocument();
 
     viewButton.click();
     expect(await screen.findByText("Download JSON")).toBeInTheDocument();
