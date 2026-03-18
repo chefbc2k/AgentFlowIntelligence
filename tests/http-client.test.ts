@@ -166,25 +166,24 @@ describe("HttpClient", () => {
     const fetchMock = vi.fn(async () => okJson({}));
     vi.stubGlobal("fetch", fetchMock);
 
-    // Use 120 rpm (2 req/sec) and consume all tokens first
+    // Use 120 rpm (2 req/sec) and explicitly start from an empty bucket.
+    // Consuming the whole bucket through live requests is flaky because the
+    // limiter refills continuously while the setup loop itself is running.
     const rateLimiter = new RateLimiter({ requestsPerMinute: 120 });
+    (rateLimiter as unknown as { tokens: number; lastRefill: number }).tokens = 0;
+    (rateLimiter as unknown as { tokens: number; lastRefill: number }).lastRefill = Date.now();
     const client = new HttpClient({
       baseUrl: "https://api.example.com",
       rateLimiter,
     });
 
-    // Consume all 120 tokens
-    for (let i = 0; i < 120; i++) {
-      await client.get(`/test${i}`);
-    }
-
-    // Next request should wait for refill (~500ms for 1 token at 2/sec)
+    // First request should wait for refill (~500ms for 1 token at 2/sec)
     const start = Date.now();
     await client.get("/test-final");
     const elapsed = Date.now() - start;
 
     expect(elapsed).toBeGreaterThanOrEqual(450);
-    expect(fetchMock).toHaveBeenCalledTimes(121);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("retries failed requests", async () => {
