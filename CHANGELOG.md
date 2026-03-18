@@ -70,6 +70,11 @@ Rules:
 - Revalidated locally with `npm run validate`; lint passed, `tsc --noEmit` passed, the UI build passed, and both server + UI finished at 100% lines/statements/functions/branches.
 - Extended Base enrichment to attach a `confirmedAt` timestamp to confirmed transactions (via block timestamp lookup) and expanded agent metrics to include onchain transaction + token-transfer behavior (counterparty concentration, token diversity, inbound/outbound counts), rendered in the UI.
 - Upgraded the x402 client to capture a full paid-call transcript (402 challenge → signature → settlement) via an optional `onPaymentRequired` callback and added typed x402 packet decoding helpers; revalidated `npm run validate` with 100% coverage.
+- Closed AFI’s live-Locus observability gap by persisting wrapped API calls, Locus-routed x402 calls, checkout payments, and direct send actions into the interaction/evidence store immediately instead of waiting for the later transaction-sync endpoint.
+- Root cause fixed at source: the live Locus routes were proxy-only, so first-party paid actions disappeared from the AFI behavior graph unless `/api/locus/ingest/transactions` ran afterward; thin upstream `{ ok: true }` responses also risked collapsing multiple actions onto the same synthetic interaction id. Added a shared live-action capture path, enriched best-effort wallet snapshots with explicit warning logs on snapshot failure, and salted normalization ids so repeated thin responses remain distinct interactions.
+- Added regression coverage for immediate live-action persistence, AFI response metadata, repeated thin-response collision avoidance, snapshot-failure observability, and live wallet snapshot fallbacks when Locus omits address/balance fields.
+- Files/modules affected: `server/index.ts`, `server/normalize.ts`, `tests/api.test.ts`.
+- Validation status: `npm run validate` passed cleanly on March 17, 2026 with lint green, `tsc --noEmit` green, build green, server coverage `1399/1399` statements / `351/351` functions / `1122/1122` branches, and UI coverage `115/115` statements / `42/42` functions / `177/177` branches.
 
 ## 2026-03-15
 

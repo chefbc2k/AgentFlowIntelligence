@@ -204,6 +204,8 @@ export interface NormalizeLocusInput {
   locusTx: Record<string, unknown>;
   txHash?: string;
   walletSnapshot?: WalletSnapshotRecord;
+  actionKey?: string;
+  createdAt?: string;
 }
 
 function inferServiceFromLocusTx(locusTx: Record<string, unknown>): { counterparty?: string; service?: string } {
@@ -220,14 +222,15 @@ function inferServiceFromLocusTx(locusTx: Record<string, unknown>): { counterpar
 }
 
 export function normalizeLocusInteraction(input: NormalizeLocusInput): NormalizedBundle {
-  const createdAt = new Date().toISOString();
+  const createdAt = input.createdAt ?? new Date().toISOString();
   const hints = inferServiceFromLocusTx(input.locusTx);
   const counterparty = input.counterparty ?? hints.counterparty;
   const service = input.service ?? hints.service;
   const interactionId = interactionIdFromParts([
     String(input.locusTx.id ?? ""),
     input.txHash ?? "",
-    String(input.locusTx.createdAt ?? ""),
+    String(input.locusTx.createdAt ?? createdAt),
+    input.actionKey ?? "",
   ]);
 
   const interaction: InteractionRecord = {

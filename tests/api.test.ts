@@ -777,6 +777,155 @@ describe("server api logic", () => {
     expect((await api.locusIngestTransactions()).status).toBe(200);
   });
 
+  it("persists live locus actions immediately and returns AFI capture metadata", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string) => {
+        const url = new URL(input);
+        if (url.hostname !== "beta-api.paywithlocus.com") return notOk(404);
+
+        if (url.pathname === "/api/status") return okJson({ address: "0xwallet-live", status: "ok" });
+        if (url.pathname === "/api/pay/balance") return okJson({ balance: "8", allowance: "4", maxTx: "2", approvalsRequired: false });
+        if (url.pathname === "/api/pay/send") return okJson({ id: "send-1", txHash: "0xsend", status: "pending", counterparty: "0xrecipient" });
+        if (url.pathname === "/api/wrapped/demo/path") return okJson({ id: "wrapped-1", amount: "3", currency: "USDC", status: "confirmed" });
+        if (url.pathname === "/api/x402/demo") return okJson({ id: "x402-1", txHash: "0xx402", payTo: "0xmerchant", status: "confirmed" });
+        if (url.pathname === "/api/checkout/agent/pay/sess") return okJson({ txId: "checkout-1", transaction: { hash: "0xcheckout" } });
+
+        return notOk(404);
+      }),
+    );
+
+    const store = createTestStore();
+    const api = createApi({
+      config: createTestConfig({ locusApiKey: "key", locusAgentId: "agent-live" }),
+      store,
+    });
+
+    const send = await api.locusSend({ amount: "1", currency: "USDC", to: "0xrecipient" });
+    const wrapped = await api.locusWrappedCall("demo", "path", { amount: "3", currency: "USDC" });
+    const x402 = await api.locusX402("demo", { amount: "4" });
+    const checkout = await api.locusCheckoutPay("sess", { amount: "5" });
+
+    expect(send.body).toEqual(expect.objectContaining({ afi: expect.objectContaining({ txHash: "0xsend", service: "/pay/send" }) }));
+    expect(wrapped.body).toEqual(expect.objectContaining({ afi: expect.objectContaining({ counterparty: "demo", service: "path" }) }));
+    expect(x402.body).toEqual(expect.objectContaining({ afi: expect.objectContaining({ counterparty: "0xmerchant", service: "demo" }) }));
+    expect(checkout.body).toEqual(expect.objectContaining({ afi: expect.objectContaining({ txHash: "0xcheckout", service: "/checkout/sess/pay" }) }));
+
+    const interactions = store.listInteractions();
+    expect(interactions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ wallet_address: "0xwallet-live", counterparty: "0xrecipient", service: "/pay/send", protocol: "locus" }),
+        expect.objectContaining({ wallet_address: "0xwallet-live", counterparty: "demo", service: "path", protocol: "locus" }),
+        expect.objectContaining({ wallet_address: "0xwallet-live", counterparty: "0xmerchant", service: "demo", protocol: "locus" }),
+        expect.objectContaining({ wallet_address: "0xwallet-live", service: "/checkout/sess/pay", protocol: "locus" }),
+      ]),
+    );
+
+    for (const result of [send, wrapped, x402, checkout]) {
+      const interactionId = (result.body as { afi: { interactionId: string } }).afi.interactionId;
+      expect(store.getInteraction(interactionId)).toBeDefined();
+      expect(store.getWalletSnapshot(interactionId)).toEqual(expect.objectContaining({ wallet_address: "0xwallet-live" }));
+      expect(store.getEvidence(interactionId).some((row) => row.kind === "locus")).toBe(true);
+    }
+  });
+
+  it("keeps repeated thin live locus responses from collapsing into one interaction", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string) => {
+        const url = new URL(input);
+        if (url.hostname !== "beta-api.paywithlocus.com") return notOk(404);
+
+        if (url.pathname === "/api/status") return okJson({ address: "0xwallet-thin", status: "ok" });
+        if (url.pathname === "/api/pay/balance") return okJson({ balance: "8" });
+        if (url.pathname === "/api/wrapped/demo/path") return okJson({ ok: true });
+
+        return notOk(404);
+      }),
+    );
+
+    const store = createTestStore();
+    const api = createApi({
+      config: createTestConfig({ locusApiKey: "key" }),
+      store,
+    });
+
+    const first = await api.locusWrappedCall("demo", "path", { ok: true });
+    const second = await api.locusWrappedCall("demo", "path", { ok: true });
+
+    const firstId = (first.body as { afi: { interactionId: string } }).afi.interactionId;
+    const secondId = (second.body as { afi: { interactionId: string } }).afi.interactionId;
+
+    expect(firstId).not.toBe(secondId);
+    expect(
+      store
+        .listInteractions()
+        .filter((row) => row.counterparty === "demo" && row.service === "path" && row.wallet_address === "0xwallet-thin"),
+    ).toHaveLength(2);
+  });
+
+  it("keeps AFI capture observable when live snapshot enrichment fails", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string) => {
+        const url = new URL(input);
+        if (url.hostname !== "beta-api.paywithlocus.com") return notOk(404);
+
+        if (url.pathname === "/api/wrapped/demo/path") return okJson("queued");
+        if (url.pathname === "/api/status") return notOk(500);
+        if (url.pathname === "/api/pay/balance") return notOk(500);
+
+        return notOk(404);
+      }),
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const store = createTestStore();
+    const api = createApi({
+      config: createTestConfig({ locusApiKey: "key" }),
+      store,
+    });
+
+    const result = await api.locusWrappedCall("demo", "path", { ok: true });
+    const interactionId = (result.body as { afi: { interactionId: string } }).afi.interactionId;
+
+    expect(result.body).toEqual(expect.objectContaining({ result: "queued" }));
+    expect(store.getInteraction(interactionId)).toEqual(expect.objectContaining({ counterparty: "demo", service: "path" }));
+    expect(store.getWalletSnapshot(interactionId)).toBeUndefined();
+    expect(warn).toHaveBeenCalledWith("locus_snapshot_capture_failed", expect.objectContaining({ interactionId: expect.any(String) }));
+  });
+
+  it("falls back to status-derived live wallet snapshot values when Locus omits address and balance details", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string) => {
+        const url = new URL(input);
+        if (url.hostname !== "beta-api.paywithlocus.com") return notOk(404);
+
+        if (url.pathname === "/api/status") return okJson({ balance: "11", status: "ok" });
+        if (url.pathname === "/api/pay/balance") return okJson({ allowance: "2" });
+        if (url.pathname === "/api/pay/send") return okJson({ id: "send-fallback" });
+
+        return notOk(404);
+      }),
+    );
+
+    const store = createTestStore();
+    const api = createApi({
+      config: createTestConfig({ locusApiKey: "key" }),
+      store,
+    });
+
+    const result = await api.locusSend({ amount: "1" });
+    const interactionId = (result.body as { afi: { interactionId: string } }).afi.interactionId;
+    const snapshot = store.getWalletSnapshot(interactionId);
+
+    expect(snapshot?.id).toContain("wallet:unknown:");
+    expect(snapshot?.wallet_address).toBeUndefined();
+    expect(snapshot?.balance).toBe("11");
+    expect(snapshot?.allowance).toBe("2");
+  });
+
   it("covers locus ingest defaulting branches", async () => {
     vi.stubGlobal(
       "fetch",

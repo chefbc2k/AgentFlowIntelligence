@@ -1,5 +1,6 @@
 import express from "express";
 import cors from "cors";
+import { randomUUID } from "node:crypto";
 import { getConfig } from "./config";
 import { Store } from "./store";
 import { extractX402Headers } from "./x402";
@@ -34,6 +35,44 @@ function fail(status: number, error: string): ApiResponse<ApiErrorBody> {
   return { status, body: { error } };
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function getStringField(record: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function getNestedStringField(record: Record<string, unknown>, keys: string[], nestedKeys: string[]) {
+  for (const key of keys) {
+    const nested = record[key];
+    if (!isRecord(nested)) {
+      continue;
+    }
+
+    const value = getStringField(nested, nestedKeys);
+    if (value) {
+      return value;
+    }
+  }
+
+  return undefined;
+}
+
+function attachAfiCapture<T>(payload: T, afi: { interactionId: string; txHash?: string; counterparty?: string; service?: string }) {
+  if (isRecord(payload)) {
+    return { ...payload, afi };
+  }
+
+  return { result: payload, afi };
+}
+
 export type JsonResponder = {
   status: (code: number) => JsonResponder;
   json: (body: unknown) => unknown;
@@ -55,6 +94,131 @@ export function createApi({ config, store }: { config: AppConfig; store: Store }
     });
     const payload = await handler(client);
     return ok(payload);
+  };
+
+  const captureWalletSnapshot = async (client: LocusClient, interactionId: string) => {
+    try {
+      const [status, balance] = await Promise.all([client.getStatus(), client.getBalance()]);
+
+      return {
+        id: `wallet:${status.address ?? "unknown"}:${Date.now()}`,
+        interaction_id: interactionId,
+        wallet_address: status.address,
+        balance: balance.balance ?? status.balance,
+        allowance: balance.allowance,
+        max_tx: balance.maxTx,
+        approvals_required: balance.approvalsRequired,
+        metadata: { status, balance },
+        created_at: new Date().toISOString(),
+      } satisfies WalletSnapshotRecord;
+    } catch (error) {
+      // The payment/action already succeeded upstream; keep AFI capture best-effort but observable.
+      console.warn("locus_snapshot_capture_failed", { interactionId, error });
+      return undefined;
+    }
+  };
+
+  const captureLocusAction = async (
+    client: LocusClient,
+    action:
+      | { kind: "send"; body?: Record<string, unknown> }
+      | { kind: "wrapped"; provider: string; endpoint: string; body?: Record<string, unknown> }
+      | { kind: "x402"; slug: string; body?: Record<string, unknown> }
+      | { kind: "checkout_pay"; sessionId: string; body?: Record<string, unknown> },
+    payload: unknown,
+  ) => {
+    const response = isRecord(payload) ? payload : {};
+    const createdAt =
+      getStringField(response, ["createdAt", "created_at", "timestamp"]) ??
+      getNestedStringField(response, ["payment", "transaction"], ["createdAt", "created_at", "timestamp"]) ??
+      new Date().toISOString();
+    const txHash =
+      getStringField(response, ["txHash", "tx_hash", "transactionHash", "transaction_hash"]) ??
+      getNestedStringField(response, ["payment", "transaction"], ["txHash", "tx_hash", "hash"]);
+    const responseCounterparty =
+      getStringField(response, ["counterparty", "provider", "merchant", "payTo", "recipient", "to"]) ??
+      getNestedStringField(response, ["payment", "transaction"], ["counterparty", "merchant", "payTo", "recipient", "to"]);
+    const amount =
+      getStringField(response, ["amount", "value"]) ??
+      getStringField(action.body ?? {}, ["amount", "value"]);
+    const currency =
+      getStringField(response, ["currency", "asset", "tokenSymbol"]) ??
+      getStringField(action.body ?? {}, ["currency", "asset", "tokenSymbol"]);
+    const status =
+      getStringField(response, ["status", "state"]) ??
+      getNestedStringField(response, ["payment", "transaction"], ["status", "state"]);
+    const actionKey = `${action.kind}:${randomUUID()}`;
+    const walletSnapshot = await captureWalletSnapshot(client, actionKey);
+
+    const locusTx: Record<string, unknown> = {
+      ...(isRecord(payload) ? payload : { result: payload }),
+      action: action.kind,
+      createdAt,
+      ...(action.kind === "wrapped" ? { provider: action.provider, endpoint: action.endpoint } : {}),
+      ...(action.kind === "x402" ? { slug: action.slug } : {}),
+      ...(action.kind === "checkout_pay" ? { sessionId: action.sessionId, checkoutPath: `/checkout/${action.sessionId}/pay` } : {}),
+      ...(action.kind === "send" ? { endpoint: "/pay/send" } : {}),
+      ...(action.body ? { request: action.body } : {}),
+      ...(txHash ? { txHash } : {}),
+      ...(amount ? { amount } : {}),
+      ...(currency ? { currency } : {}),
+      ...(status ? { status } : {}),
+    };
+
+    const bundle = normalizeLocusInteraction({
+      agentId: config.locusAgentId,
+      walletAddress: walletSnapshot?.wallet_address,
+      counterparty:
+        action.kind === "wrapped"
+          ? action.provider
+          : action.kind === "send"
+            ? getStringField(action.body ?? {}, ["counterparty", "recipient", "to"])
+            : responseCounterparty,
+      service:
+        action.kind === "wrapped"
+          ? action.endpoint
+          : action.kind === "x402"
+            ? action.slug
+            : action.kind === "checkout_pay"
+              ? `/checkout/${action.sessionId}/pay`
+              : "/pay/send",
+      locusTx,
+      txHash,
+      walletSnapshot,
+      actionKey,
+      createdAt,
+    });
+
+    store.upsertInteraction(bundle.interaction);
+    store.upsertSettlement(bundle.settlement);
+    store.upsertEvidence(bundle.evidence);
+    if (walletSnapshot) {
+      store.upsertWalletSnapshot({
+        ...walletSnapshot,
+        id: `${walletSnapshot.id}:${bundle.interaction.id}`,
+        interaction_id: bundle.interaction.id,
+      });
+    }
+    store.upsertLocusTransactions([
+      {
+        id: getStringField(locusTx, ["id", "txId", "paymentId"]) ?? bundle.interaction.id,
+        interaction_id: bundle.interaction.id,
+        tx_hash: txHash,
+        status,
+        counterparty: bundle.interaction.counterparty,
+        amount,
+        currency,
+        created_at: createdAt,
+        raw: locusTx,
+      },
+    ]);
+
+    return attachAfiCapture(payload, {
+      interactionId: bundle.interaction.id,
+      txHash,
+      counterparty: bundle.interaction.counterparty,
+      service: bundle.interaction.service,
+    });
   };
 
   return {
@@ -245,14 +409,20 @@ export function createApi({ config, store }: { config: AppConfig; store: Store }
     locusTransactions: () => withLocus((client) => client.getTransactions()),
     locusRegister: (body: Record<string, unknown> | undefined) => withLocus((client) => client.register(body)),
     locusBalance: () => withLocus((client) => client.getBalance()),
-    locusSend: (body: Record<string, unknown> | undefined) => withLocus((client) => client.sendPayment(body ?? {})),
+    locusSend: (body: Record<string, unknown> | undefined) =>
+      withLocus(async (client) => captureLocusAction(client, { kind: "send", body }, await client.sendPayment(body ?? {}))),
     locusWrappedMd: () => withLocus((client) => client.getWrappedCatalog()),
     locusWrappedCall: (provider: string, endpoint: string, body: Record<string, unknown> | undefined) =>
-      withLocus((client) => client.callWrapped(provider, endpoint, body)),
-    locusX402: (slug: string, body: Record<string, unknown> | undefined) => withLocus((client) => client.callX402(slug, body)),
+      withLocus(async (client) =>
+        captureLocusAction(client, { kind: "wrapped", provider, endpoint, body }, await client.callWrapped(provider, endpoint, body)),
+      ),
+    locusX402: (slug: string, body: Record<string, unknown> | undefined) =>
+      withLocus(async (client) => captureLocusAction(client, { kind: "x402", slug, body }, await client.callX402(slug, body))),
     locusCheckoutPreflight: (sessionId: string) => withLocus((client) => client.checkoutPreflight(sessionId)),
     locusCheckoutPay: (sessionId: string, body: Record<string, unknown> | undefined) =>
-      withLocus((client) => client.checkoutPay(sessionId, body)),
+      withLocus(async (client) =>
+        captureLocusAction(client, { kind: "checkout_pay", sessionId, body }, await client.checkoutPay(sessionId, body)),
+      ),
     locusCheckoutPayment: (txId: string) => withLocus((client) => client.checkoutPayment(txId)),
     locusIngestTransactions: () =>
       withLocus(async (client) => {
