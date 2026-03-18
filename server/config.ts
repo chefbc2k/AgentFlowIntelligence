@@ -20,6 +20,8 @@ const configSchema = z.object({
   graphApiKey: z.string().optional(),
   // Background jobs
   enableBackgroundJobs: z.boolean().default(true),
+  // Parquet export
+  enableParquetExport: z.boolean().default(false),
 });
 
 export type AppConfig = z.infer<typeof configSchema>;
@@ -41,5 +43,6 @@ export function getConfig(): AppConfig {
     duneApiKey: process.env.AFI_DUNE_API_KEY,
     graphApiKey: process.env.AFI_GRAPH_API_KEY,
     enableBackgroundJobs: process.env.AFI_ENABLE_BACKGROUND_JOBS === "false" ? false : true,
+    enableParquetExport: process.env.AFI_ENABLE_PARQUET_EXPORT === "true" ? true : false,
   });
 }

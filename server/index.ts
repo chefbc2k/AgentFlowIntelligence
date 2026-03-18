@@ -17,12 +17,14 @@ import { DuneClient } from "./dune";
 import { JobScheduler } from "./jobs";
 import { buildInteractionContext, buildPortableInteractionPacket } from "./packet";
 import { refreshProtocolLabelForInteraction } from "./protocol-labels";
+import { QueryCache } from "./query-cache";
 import type { WalletSnapshotRecord } from "./types";
 import type { AppConfig } from "./config";
 
 export interface CreateAppOptions {
   config?: AppConfig;
   store?: Store;
+  queryCache?: QueryCache;
 }
 
 export type ApiResponse<T> = { status: number; body: T };
@@ -154,8 +156,15 @@ function validateRequest<T>(
   return { success: true, data: result.data };
 }
 
-export function createApi({ config, store }: { config: AppConfig; store: Store }) {
+export function createApi({ config, store, queryCache }: { config: AppConfig; store: Store; queryCache?: QueryCache }) {
   const duneClient = config.duneApiKey ? new DuneClient(config.duneApiKey) : undefined;
+  const cache = queryCache ?? new QueryCache({
+    agentMetricsTTL: 300,
+    counterpartyMetricsTTL: 300,
+    flowAggregateTTL: 180,
+    interactionListTTL: 60,
+    enablePerformanceMonitoring: false,
+  });
   const withLocus = async <T,>(handler: (client: LocusClient) => Promise<T> | T): Promise<ApiResponse<T | ApiErrorBody>> => {
     if (!config.locusApiKey) {
       return fail(400, "missing_locus_key");
@@ -296,6 +305,18 @@ export function createApi({ config, store }: { config: AppConfig; store: Store }
 
   return {
     health: () => ok({ ok: true, timestamp: new Date().toISOString() }),
+    parquetBootstrap: async () => {
+      const result = await store.bootstrapParquetExport();
+      return ok(result);
+    },
+    parquetBatchExport: async () => {
+      try {
+        const result = await store.batchExportToParquet();
+        return ok(result);
+      } catch (error) {
+        return fail(500, error instanceof Error ? error.message : String(error));
+      }
+    },
     listInteractions: () => ok(store.listInteractions().map((interaction) => enrichInteractionForReadModel(store, interaction))),
     getInteraction: (id: string) => {
       const interaction = store.getInteraction(id);
@@ -662,6 +683,8 @@ export function createApi({ config, store }: { config: AppConfig; store: Store }
 export function createRouteHandlers(api: ReturnType<typeof createApi>) {
   return {
     health: (_req: unknown, res: JsonResponder) => send(res, api.health()),
+    parquetBootstrap: async (_req: unknown, res: JsonResponder) => send(res, await api.parquetBootstrap()),
+    parquetBatchExport: async (_req: unknown, res: JsonResponder) => send(res, await api.parquetBatchExport()),
     listInteractions: (_req: unknown, res: JsonResponder) => send(res, api.listInteractions()),
     getInteraction: (req: { params: { id: string | string[] } }, res: JsonResponder) =>
       send(res, api.getInteraction(String(req.params.id))),
@@ -710,7 +733,11 @@ export function createRouteHandlers(api: ReturnType<typeof createApi>) {
 
 export function createApp(options: CreateAppOptions = {}) {
   const config = options.config ?? getConfig();
-  const store = options.store ?? new Store({ dbPath: config.dbPath, dataDir: config.dataDir });
+  const store = options.store ?? new Store({
+    dbPath: config.dbPath,
+    dataDir: config.dataDir,
+    enableParquetExport: config.enableParquetExport,
+  });
   const api = createApi({ config, store });
   const handlers = createRouteHandlers(api);
 
@@ -746,6 +773,8 @@ export function createApp(options: CreateAppOptions = {}) {
   app.use(express.json({ limit: "1mb" }));
 
   app.get("/api/health", handlers.health as never);
+  app.post("/api/parquet/bootstrap", handlers.parquetBootstrap as never);
+  app.post("/api/parquet/batch-export", handlers.parquetBatchExport as never);
   app.get("/api/interactions", handlers.listInteractions as never);
   app.get("/api/interactions/:id", handlers.getInteraction as never);
   app.get("/api/interactions/:id/enriched", handlers.getInteractionEnriched as never);

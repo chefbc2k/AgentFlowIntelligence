@@ -13,12 +13,41 @@ import type {
   WalletSnapshotRecord,
 } from "./types";
 import type { DatabaseConfig } from "./db";
+import { ParquetExporter } from "./parquet-export";
+import type { ExportResult } from "./parquet-export";
 
 export class Store {
   private db;
+  private parquetExporter?: ParquetExporter;
+  private enableParquetExport: boolean;
 
-  constructor(config: DatabaseConfig) {
+  constructor(config: DatabaseConfig & { enableParquetExport?: boolean }) {
     this.db = openDatabase(config);
+    this.enableParquetExport = config.enableParquetExport ?? false;
+
+    if (this.enableParquetExport) {
+      this.parquetExporter = new ParquetExporter({
+        dataDir: config.dataDir,
+        partitionBy: "date",
+      });
+    }
+  }
+
+  private async exportToParquetAsync<T>(
+    exportFn: () => Promise<T>,
+    errorContext: string,
+  ): Promise<void> {
+    if (!this.enableParquetExport || !this.parquetExporter) {
+      return;
+    }
+
+    setImmediate(async () => {
+      try {
+        await exportFn();
+      } catch (error) {
+        console.error(`Parquet export failed (${errorContext}):`, error);
+      }
+    });
   }
 
   upsertInteraction(record: InteractionRecord) {
@@ -37,6 +66,18 @@ export class Store {
       protocol: record.protocol,
       summary: JSON.stringify(record.summary),
     });
+
+    this.exportToParquetAsync(
+      async () => {
+        if (this.parquetExporter) {
+          await this.parquetExporter.exportInteractions(this, {
+            startDate: record.created_at.slice(0, 10),
+            endDate: record.created_at.slice(0, 10),
+          });
+        }
+      },
+      "upsertInteraction",
+    );
   }
 
   upsertSettlement(record: SettlementRecord) {
@@ -518,5 +559,33 @@ export class Store {
       chainId: 8453,
       symbol: row.token_symbol ?? undefined,
     }));
+  }
+
+  getParquetExporter(): ParquetExporter | undefined {
+    return this.parquetExporter;
+  }
+
+  async bootstrapParquetExport(): Promise<{
+    success: boolean;
+    results: Record<string, ExportResult>;
+    errors: string[];
+  }> {
+    if (!this.parquetExporter) {
+      return {
+        success: false,
+        results: {},
+        errors: ["Parquet export is not enabled"],
+      };
+    }
+
+    return this.parquetExporter.bootstrapExport(this);
+  }
+
+  async batchExportToParquet(): Promise<Record<string, ExportResult>> {
+    if (!this.parquetExporter) {
+      throw new Error("Parquet export is not enabled");
+    }
+
+    return this.parquetExporter.exportAll(this);
   }
 }
