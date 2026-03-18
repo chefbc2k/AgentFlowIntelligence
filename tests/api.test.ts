@@ -2,9 +2,43 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createApi, createApp, createRouteHandlers, send } from "../server/index";
 import type { AppConfig } from "../server/config";
-import { Store } from "../server/store";
+
+vi.mock("../server/db.js", async () => import("../server/db"));
+vi.mock("../server/parquet-export", () => ({
+  ParquetExporter: class {
+    async exportInteractions() {
+      return { filePath: "", rowCount: 0, timestamp: new Date().toISOString() };
+    }
+    async exportSettlements() {
+      return { filePath: "", rowCount: 0, timestamp: new Date().toISOString() };
+    }
+    async exportEvidence() {
+      return { filePath: "", rowCount: 0, timestamp: new Date().toISOString() };
+    }
+    async exportWalletSnapshots() {
+      return { filePath: "", rowCount: 0, timestamp: new Date().toISOString() };
+    }
+    async exportReceipts() {
+      return { filePath: "", rowCount: 0, timestamp: new Date().toISOString() };
+    }
+    async exportAttestations() {
+      return { filePath: "", rowCount: 0, timestamp: new Date().toISOString() };
+    }
+    async exportBaseTransactions() {
+      return { filePath: "", rowCount: 0, timestamp: new Date().toISOString() };
+    }
+    async exportTokenTransfers() {
+      return { filePath: "", rowCount: 0, timestamp: new Date().toISOString() };
+    }
+  },
+}));
+
+const [{ createApi, createApp, createRouteHandlers, send }, { Store }, { QueryCache }] = await Promise.all([
+  import("../server/index"),
+  import("../server/store"),
+  import("../server/query-cache"),
+]);
 
 const okJson = (payload: unknown) => ({
   ok: true,
@@ -32,6 +66,7 @@ function createTestConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     easBaseUrl: "https://base.easscan.org/graphql",
     easSepoliaUrl: "https://base-sepolia.easscan.org/graphql",
     enableBackgroundJobs: false,
+    enableParquetExport: false,
     ...overrides,
   };
 }
@@ -255,6 +290,111 @@ describe("server api logic", () => {
     expect(api.health().status).toBe(200);
     expect(api.listInteractions().body).toEqual([]);
     expect(api.getInteraction("missing").status).toBe(404);
+  });
+
+  it("reuses an injected query cache for metrics and invalidates it on ingestion", async () => {
+    const store = createTestStore();
+    const queryCache = new QueryCache({
+      agentMetricsTTL: 60,
+      counterpartyMetricsTTL: 60,
+      flowAggregateTTL: 60,
+      interactionListTTL: 60,
+      enablePerformanceMonitoring: true,
+    });
+    const getAgentMetricsSpy = vi.spyOn(queryCache, "getAgentMetrics");
+    const getCounterpartyMetricsSpy = vi.spyOn(queryCache, "getCounterpartyMetrics");
+    const getFlowAggregatesSpy = vi.spyOn(queryCache, "getFlowAggregates");
+    const invalidateSpy = vi.spyOn(queryCache, "invalidateOnIngestion");
+
+    const api = createApi({
+      config: createTestConfig(),
+      store,
+      queryCache,
+    });
+
+    api.agentMetrics("0xABC");
+    api.counterpartyMetrics("service1");
+    api.flowAggregates({ wallet: "0xABC", protocol: "locus" });
+
+    expect(getAgentMetricsSpy).toHaveBeenCalledWith(store, "0xABC");
+    expect(getCounterpartyMetricsSpy).toHaveBeenCalledWith(store, "service1");
+    expect(getFlowAggregatesSpy).toHaveBeenCalledWith(store, { wallet: "0xABC", protocol: "locus" });
+
+    await api.ingestX402({
+      headers: {},
+      walletAddress: "0xABC",
+      counterparty: "service1",
+      service: "/pay/send",
+    });
+
+    expect(invalidateSpy).toHaveBeenCalledWith(["0xABC"], ["service1"]);
+  });
+
+  it("exposes parquet and cache admin endpoints", async () => {
+    const store = createTestStore();
+    const queryCache = new QueryCache();
+    vi.spyOn(store, "bootstrapParquetExport").mockResolvedValue({
+      success: true,
+      results: {},
+      errors: [],
+    });
+    vi.spyOn(store, "batchExportToParquet")
+      .mockResolvedValueOnce({ interactions: { filePath: "ok.parquet", rowCount: 1, timestamp: "2024-01-01T00:00:00Z" } })
+      .mockRejectedValueOnce("batch failed");
+    const statsSpy = vi.spyOn(queryCache, "getStats");
+    const invalidateSpy = vi.spyOn(queryCache, "invalidateAll");
+
+    const api = createApi({
+      config: createTestConfig(),
+      store,
+      queryCache,
+    });
+    const handlers = createRouteHandlers(api);
+    const res = {
+      status: vi.fn().mockReturnThis(),
+      json: vi.fn().mockReturnThis(),
+    };
+
+    expect(await api.parquetBootstrap()).toEqual(
+      expect.objectContaining({ status: 200, body: { success: true, results: {}, errors: [] } }),
+    );
+    expect(await api.parquetBatchExport()).toEqual(
+      expect.objectContaining({
+        status: 200,
+        body: { interactions: { filePath: "ok.parquet", rowCount: 1, timestamp: "2024-01-01T00:00:00Z" } },
+      }),
+    );
+    expect(await api.parquetBatchExport()).toEqual(expect.objectContaining({ status: 500, body: { error: "batch failed" } }));
+    expect(api.flowAggregates({ wallet: "0xwallet" }).status).toBe(200);
+    expect(api.cacheStats().status).toBe(200);
+    expect(api.cacheInvalidate()).toEqual(expect.objectContaining({ status: 200, body: { ok: true, message: "cache_invalidated" } }));
+    expect(statsSpy).toHaveBeenCalled();
+    expect(invalidateSpy).toHaveBeenCalled();
+
+    await handlers.parquetBootstrap({}, res);
+    await handlers.parquetBatchExport({}, res);
+    handlers.flowAggregates({ query: { wallet: "0xwallet", startDate: "2024-01-01", endDate: "2024-01-02" } }, res);
+    handlers.flowAggregates({ query: { counterparty: ["service1"], protocol: ["x402"] } }, res);
+    handlers.cacheStats({}, res);
+    handlers.cacheInvalidate({}, res);
+    expect(res.status).toHaveBeenCalled();
+    expect(res.json).toHaveBeenCalled();
+  });
+
+  it("runs query cache cleanup on the app interval", () => {
+    vi.useFakeTimers();
+    const queryCache = new QueryCache();
+    const cleanupSpy = vi.spyOn(queryCache, "cleanup");
+
+    createApp({
+      config: createTestConfig(),
+      store: createTestStore(),
+      queryCache,
+    });
+
+    vi.advanceTimersByTime(5 * 60 * 1000);
+
+    expect(cleanupSpy).toHaveBeenCalled();
   });
 
   it("returns enriched interaction rows from the list read model", () => {

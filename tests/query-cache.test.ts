@@ -110,7 +110,7 @@ describe("QueryCache", () => {
 
     it("handles case-insensitive wallet addresses", () => {
       cache.getAgentMetrics(mockStore, "0xABC");
-      const result = cache.getAgentMetrics(mockStore, "0xabc");
+      cache.getAgentMetrics(mockStore, "0xabc");
 
       const stats = cache.getStats();
       expect(stats.hits).toBe(1); // Second call should be a hit
@@ -185,6 +185,21 @@ describe("QueryCache", () => {
       expect(result.protocolSeries.every((p) => p.protocol === "locus")).toBe(true);
     });
 
+    it("filters flow aggregates by start and end date", () => {
+      const result = cache.getFlowAggregates(mockStore, {
+        startDate: "2024-01-02T00:00:00Z",
+        endDate: "2024-01-02T23:59:59Z",
+      });
+
+      expect(result.totalInteractions).toBe(1);
+      expect(result.dailySeries).toEqual([
+        expect.objectContaining({
+          date: "2024-01-02",
+          count: 1,
+        }),
+      ]);
+    });
+
     it("caches different filter combinations separately", () => {
       const result1 = cache.getFlowAggregates(mockStore, { wallet: "0x123" });
       const result2 = cache.getFlowAggregates(mockStore, { counterparty: "service1" });
@@ -193,6 +208,35 @@ describe("QueryCache", () => {
 
       const stats = cache.getStats();
       expect(stats.misses).toBe(2); // Both should be cache misses (different filters)
+    });
+
+    it("aggregates multiple interactions on the same day into one daily bucket", () => {
+      mockStore.listInteractions = () =>
+        [
+          {
+            id: "int-same-day-1",
+            created_at: "2024-01-01T00:00:00Z",
+            protocol: "locus",
+            counterparty: "service1",
+            summary: {},
+          },
+          {
+            id: "int-same-day-2",
+            created_at: "2024-01-01T12:00:00Z",
+            protocol: "x402",
+            counterparty: "service2",
+            summary: {},
+          },
+        ] as unknown as ReturnType<Store["listInteractions"]>;
+
+      const result = cache.getFlowAggregates(mockStore, {});
+
+      expect(result.dailySeries).toEqual([
+        expect.objectContaining({
+          date: "2024-01-01",
+          count: 2,
+        }),
+      ]);
     });
   });
 

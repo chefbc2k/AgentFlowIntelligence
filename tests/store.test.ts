@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -591,5 +591,76 @@ describe("store", () => {
     ]);
 
     expect(store.listObservedTokens()).toEqual([{ address: "0xtoken-null", chainId: 8453, symbol: undefined }]);
+  });
+
+  it("guards parquet export helpers when parquet export is disabled", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "afi-store-guard-"));
+    const store = new Store({ dbPath: ":memory:", dataDir, enableParquetExport: false });
+
+    expect(store.getParquetExporter()).toBeUndefined();
+    await expect(store.batchExportToParquet()).rejects.toThrow("Parquet export is not enabled");
+    await expect(store.bootstrapParquetExport()).resolves.toEqual({
+      success: false,
+      results: {},
+      errors: ["Parquet export is not enabled"],
+    });
+  });
+
+  it("writes interactions without parquet side effects when parquet export is disabled", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "afi-store-disabled-write-"));
+    const store = new Store({ dbPath: ":memory:", dataDir, enableParquetExport: false });
+
+    store.upsertInteraction({
+      id: "i-disabled",
+      created_at: "2024-01-01T00:00:00Z",
+      protocol: "x402",
+      summary: {},
+    });
+
+    expect(store.listInteractions()).toEqual([
+      expect.objectContaining({
+        id: "i-disabled",
+      }),
+    ]);
+  });
+
+  it("initializes parquet export and logs async export failures without breaking writes", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "afi-store-parquet-"));
+    const store = new Store({ dbPath: ":memory:", dataDir, enableParquetExport: true });
+    const exporter = store.getParquetExporter();
+    const exportSpy = vi.spyOn(exporter!, "exportInteractions").mockRejectedValueOnce(new Error("boom"));
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    store.upsertInteraction({
+      id: "i-async",
+      created_at: "2024-01-01T00:00:00Z",
+      protocol: "x402",
+      summary: {},
+    });
+
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(exporter).toBeDefined();
+    expect(exportSpy).toHaveBeenCalledWith(store, {
+      startDate: "2024-01-01",
+      endDate: "2024-01-01",
+    });
+    expect(consoleSpy).toHaveBeenCalledWith("Parquet export failed (upsertInteraction):", expect.any(Error));
+
+    consoleSpy.mockRestore();
+  });
+
+  it("delegates bootstrap and batch parquet exports to the configured exporter", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "afi-store-parquet-success-"));
+    const store = new Store({ dbPath: ":memory:", dataDir, enableParquetExport: true });
+    const exporter = store.getParquetExporter();
+    const bootstrapResult = { success: true, results: {}, errors: [] };
+    const batchResult = { interactions: { filePath: "ok.parquet", rowCount: 1, timestamp: "2024-01-01T00:00:00Z" } };
+
+    vi.spyOn(exporter!, "bootstrapExport").mockResolvedValue(bootstrapResult);
+    vi.spyOn(exporter!, "exportAll").mockResolvedValue(batchResult);
+
+    await expect(store.bootstrapParquetExport()).resolves.toEqual(bootstrapResult);
+    await expect(store.batchExportToParquet()).resolves.toEqual(batchResult);
   });
 });

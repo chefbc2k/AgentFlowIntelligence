@@ -16,3 +16,6 @@ broadcast/
 .env.local
 .env.*.local
 .DS_Store
+server/**/*.js
+src/**/*.js
+tests/**/*.js

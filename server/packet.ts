@@ -171,11 +171,11 @@ export function buildPortableInteractionPacket(
             }
           : undefined,
     },
-    evidence: Object.assign([...context.evidence], {
+    evidence: {
       timeline: context.evidence,
       receipts,
       attestations,
-    }),
+    },
     correlations: {
       settlement: context.settlement,
       baseTransaction: context.baseTransaction,

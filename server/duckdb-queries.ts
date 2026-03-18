@@ -1,11 +1,8 @@
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 
 /**
- * DuckDB-inspired query engine using node:sqlite
- * Provides analytical queries over AFI data
- *
- * Note: This uses node:sqlite as a lightweight alternative to DuckDB
- * For production scale, consider upgrading to actual DuckDB with Parquet support
+ * SQLite-backed analytical query engine.
+ * Provides analytical queries over AFI data using node:sqlite.
  */
 export class DuckDBQueryEngine {
   private db: DatabaseSync;
@@ -17,7 +14,7 @@ export class DuckDBQueryEngine {
   /**
    * Execute a raw SQL query
    */
-  query<T = unknown>(sql: string, params?: unknown[]): T[] {
+  query<T = unknown>(sql: string, params?: SQLInputValue[]): T[] {
     try {
       const stmt = this.db.prepare(sql);
       const result = params ? stmt.all(...params) : stmt.all();
@@ -52,7 +49,7 @@ export class DuckDBQueryEngine {
       FROM interactions
       WHERE wallet_address IS NOT NULL
       GROUP BY wallet_address
-      ORDER BY count DESC
+      ORDER BY count DESC, wallet_address ASC
       LIMIT ?`,
       [limit]
     );
@@ -69,7 +66,7 @@ export class DuckDBQueryEngine {
       FROM interactions
       WHERE counterparty IS NOT NULL
       GROUP BY counterparty
-      ORDER BY count DESC
+      ORDER BY count DESC, counterparty ASC
       LIMIT ?`,
       [limit]
     );
@@ -89,7 +86,7 @@ export class DuckDBQueryEngine {
       LEFT JOIN settlements s ON i.id = s.interaction_id
       WHERE i.counterparty IS NOT NULL
       GROUP BY i.counterparty
-      ORDER BY total DESC`
+      ORDER BY total DESC, i.counterparty ASC`
     );
   }
 
@@ -104,7 +101,7 @@ export class DuckDBQueryEngine {
       FROM interactions
       WHERE protocol IS NOT NULL
       GROUP BY protocol
-      ORDER BY count DESC`
+      ORDER BY count DESC, protocol ASC`
     );
   }
 
@@ -148,10 +145,10 @@ export class DuckDBQueryEngine {
   ): Array<{ period: string; count: number }> {
     const dateFormat =
       granularity === "hour"
-        ? "datetime(created_at, 'start of hour')"
+        ? "strftime('%Y-%m-%d %H:00:00', created_at)"
         : granularity === "week"
           ? "date(created_at, 'weekday 0', '-6 days')"
-          : "DATE(created_at)";
+          : "date(created_at)";
 
     return this.query<{ period: string; count: number }>(
       `SELECT
@@ -173,7 +170,7 @@ export class DuckDBQueryEngine {
         COUNT(*) as count
       FROM base_transactions
       GROUP BY status
-      ORDER BY count DESC`
+      ORDER BY count DESC, status ASC`
     );
   }
 
@@ -186,8 +183,8 @@ export class DuckDBQueryEngine {
         COALESCE(token_symbol, 'unknown') as token_symbol,
         COUNT(*) as transfer_count
       FROM token_transfers
-      GROUP BY token_symbol
-      ORDER BY transfer_count DESC`
+      GROUP BY COALESCE(token_symbol, 'unknown')
+      ORDER BY transfer_count DESC, token_symbol ASC`
     );
   }
 
@@ -203,7 +200,7 @@ export class DuckDBQueryEngine {
       FROM interactions
       WHERE wallet_address = ?
       GROUP BY day_of_week, hour
-      ORDER BY day_of_week, hour`,
+      ORDER BY day_of_week ASC, hour ASC`,
       [walletAddress]
     );
   }
@@ -269,7 +266,7 @@ export class DuckDBQueryEngine {
         s.tx_hash
       FROM interactions i
       LEFT JOIN settlements s ON i.id = s.interaction_id
-      ORDER BY i.created_at DESC
+      ORDER BY i.created_at DESC, i.id DESC
       LIMIT ?`,
       [limit]
     );
@@ -375,13 +372,13 @@ export class FeatureExtractor {
       }
     }
 
-    const maxWalletCount = Math.max(...Array.from(wallets.values()));
+    const maxWalletCount = wallets.size > 0 ? Math.max(...Array.from(wallets.values())) : 0;
 
     return {
       totalInteractions: interactions.length,
       uniqueWallets: wallets.size,
       avgInteractionsPerWallet: wallets.size > 0 ? interactions.length / wallets.size : 0,
-      concentrationRate: interactions.length > 0 ? maxWalletCount / interactions.length : 0,
+      concentrationRate: wallets.size > 0 ? maxWalletCount / interactions.length : 0,
     };
   }
 

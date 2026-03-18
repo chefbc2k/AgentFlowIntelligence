@@ -8,7 +8,7 @@ import { extractX402Headers } from "./x402";
 import { normalizeInteraction, normalizeLocusInteraction } from "./normalize";
 import { LocusClient } from "./locus";
 import { fetchBaseTokenTransfers, fetchBaseTx, fetchBaseTxHistory } from "./base";
-import { computeAgentMetrics, computeCounterpartyMetrics, enrichInteractionForReadModel } from "./metrics";
+import { enrichInteractionForReadModel } from "./metrics";
 import { fetchEasAttestations } from "./eas";
 import { parsePeacReceipt } from "./peac";
 import { deriveControls } from "./controls";
@@ -294,6 +294,10 @@ export function createApi({ config, store, queryCache }: { config: AppConfig; st
         raw: locusTx,
       },
     ]);
+    cache.invalidateOnIngestion(
+      bundle.interaction.wallet_address ? [bundle.interaction.wallet_address] : [],
+      bundle.interaction.counterparty ? [bundle.interaction.counterparty] : [],
+    );
 
     return attachAfiCapture(payload, {
       interactionId: bundle.interaction.id,
@@ -440,6 +444,10 @@ export function createApi({ config, store, queryCache }: { config: AppConfig; st
         };
         store.upsertWalletSnapshot(snapshot);
       }
+      cache.invalidateOnIngestion(
+        bundle.interaction.wallet_address ? [bundle.interaction.wallet_address] : [],
+        bundle.interaction.counterparty ? [bundle.interaction.counterparty] : [],
+      );
 
       const peacPayload = bundle.evidence.find((row) => row.kind === "peac")?.payload as
         | { status: string; decoded?: unknown; raw?: unknown }
@@ -621,6 +629,8 @@ export function createApi({ config, store, queryCache }: { config: AppConfig; st
         });
 
         store.upsertLocusTransactions(locusRows);
+        const counterparties = Array.from(new Set(locusRows.map((row) => row.counterparty).filter((row): row is string => Boolean(row))));
+        cache.invalidateOnIngestion(status.address ? [status.address] : [], counterparties);
 
         return { ok: true, count: locusRows.length };
       }),
@@ -675,8 +685,20 @@ export function createApi({ config, store, queryCache }: { config: AppConfig; st
       }
       return ok({ ok: true, id: parsed.id });
     },
-    agentMetrics: (wallet: string) => ok(computeAgentMetrics(store, wallet)),
-    counterpartyMetrics: (id: string) => ok(computeCounterpartyMetrics(store, id)),
+    agentMetrics: (wallet: string) => ok(cache.getAgentMetrics(store, wallet)),
+    counterpartyMetrics: (id: string) => ok(cache.getCounterpartyMetrics(store, id)),
+    flowAggregates: (filters: {
+      wallet?: string;
+      counterparty?: string;
+      protocol?: string;
+      startDate?: string;
+      endDate?: string;
+    } = {}) => ok(cache.getFlowAggregates(store, filters)),
+    cacheStats: () => ok(cache.getStats()),
+    cacheInvalidate: () => {
+      cache.invalidateAll();
+      return ok({ ok: true, message: "cache_invalidated" });
+    },
   };
 }
 
@@ -728,6 +750,22 @@ export function createRouteHandlers(api: ReturnType<typeof createApi>) {
       send(res, api.agentMetrics(String(req.params.wallet))),
     counterpartyMetrics: (req: { params: { id: string | string[] } }, res: JsonResponder) =>
       send(res, api.counterpartyMetrics(String(req.params.id))),
+    flowAggregates: (
+      req: { query: { wallet?: string | string[]; counterparty?: string | string[]; protocol?: string | string[]; startDate?: string | string[]; endDate?: string | string[] } },
+      res: JsonResponder,
+    ) =>
+      send(
+        res,
+        api.flowAggregates({
+          wallet: req.query.wallet ? String(req.query.wallet) : undefined,
+          counterparty: req.query.counterparty ? String(req.query.counterparty) : undefined,
+          protocol: req.query.protocol ? String(req.query.protocol) : undefined,
+          startDate: req.query.startDate ? String(req.query.startDate) : undefined,
+          endDate: req.query.endDate ? String(req.query.endDate) : undefined,
+        }),
+      ),
+    cacheStats: (_req: unknown, res: JsonResponder) => send(res, api.cacheStats()),
+    cacheInvalidate: (_req: unknown, res: JsonResponder) => send(res, api.cacheInvalidate()),
   };
 }
 
@@ -738,7 +776,14 @@ export function createApp(options: CreateAppOptions = {}) {
     dataDir: config.dataDir,
     enableParquetExport: config.enableParquetExport,
   });
-  const api = createApi({ config, store });
+  const queryCache = options.queryCache ?? new QueryCache({
+    agentMetricsTTL: 300,
+    counterpartyMetricsTTL: 300,
+    flowAggregateTTL: 180,
+    interactionListTTL: 60,
+    enablePerformanceMonitoring: false,
+  });
+  const api = createApi({ config, store, queryCache });
   const handlers = createRouteHandlers(api);
 
   // Initialize background services
@@ -755,15 +800,21 @@ export function createApp(options: CreateAppOptions = {}) {
 
   // Start background jobs
   jobScheduler.start();
+  const cacheCleanupInterval = setInterval(() => {
+    queryCache.cleanup();
+  }, 5 * 60 * 1000);
+  cacheCleanupInterval.unref?.();
 
   // Graceful shutdown
   process.on("SIGTERM", () => {
     console.log("SIGTERM received, stopping background jobs");
+    clearInterval(cacheCleanupInterval);
     jobScheduler.stop();
   });
 
   process.on("SIGINT", () => {
     console.log("SIGINT received, stopping background jobs");
+    clearInterval(cacheCleanupInterval);
     jobScheduler.stop();
     process.exit(0);
   });
@@ -803,6 +854,9 @@ export function createApp(options: CreateAppOptions = {}) {
   app.post("/api/peac/receipt", handlers.peacReceipt as never);
   app.get("/api/metrics/agent/:wallet", handlers.agentMetrics as never);
   app.get("/api/metrics/counterparty/:id", handlers.counterpartyMetrics as never);
+  app.get("/api/metrics/flow-aggregates", handlers.flowAggregates as never);
+  app.get("/api/cache/stats", handlers.cacheStats as never);
+  app.post("/api/cache/invalidate", handlers.cacheInvalidate as never);
 
   return app;
 }

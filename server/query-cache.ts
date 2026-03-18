@@ -278,12 +278,14 @@ export class QueryCache {
       interactions = interactions.filter((i) => i.protocol === filters.protocol);
     }
 
-    if (filters.startDate) {
-      interactions = interactions.filter((i) => i.created_at >= filters.startDate);
+    const { startDate, endDate } = filters;
+
+    if (startDate) {
+      interactions = interactions.filter((i) => i.created_at >= startDate);
     }
 
-    if (filters.endDate) {
-      interactions = interactions.filter((i) => i.created_at <= filters.endDate);
+    if (endDate) {
+      interactions = interactions.filter((i) => i.created_at <= endDate);
     }
 
     // Aggregate by time period (daily)

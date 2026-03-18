@@ -1,10 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, existsSync, readdirSync } from "node:fs";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ParquetExporter } from "../server/parquet-export";
+import { ParquetReader } from "../server/parquet-lib";
 import { Store } from "../server/store";
-import { ParquetReader } from "parquetjs";
+import type { InteractionRecord } from "../server/types";
 
 describe("ParquetExporter", () => {
   let dataDir: string;
@@ -17,6 +18,16 @@ describe("ParquetExporter", () => {
     exporter = new ParquetExporter({ dataDir });
   });
 
+  const upsertInteraction = (
+    overrides: Partial<InteractionRecord> & Pick<InteractionRecord, "id" | "created_at">,
+  ) => {
+    store.upsertInteraction({
+      protocol: "x402",
+      summary: {},
+      ...overrides,
+    });
+  };
+
   afterEach(() => {
     if (existsSync(dataDir)) {
       rmSync(dataDir, { recursive: true, force: true });
@@ -26,7 +37,7 @@ describe("ParquetExporter", () => {
   describe("constructor and initialization", () => {
     it("creates data directory if it does not exist", () => {
       const newDir = join(dataDir, "new-parquet-dir");
-      const newExporter = new ParquetExporter({ dataDir: newDir });
+      new ParquetExporter({ dataDir: newDir });
       expect(existsSync(newDir)).toBe(true);
       rmSync(newDir, { recursive: true, force: true });
     });
@@ -56,8 +67,17 @@ describe("ParquetExporter", () => {
       expect(result.timestamp).toBeDefined();
     });
 
+    it("exports empty datasets without date partitions when partitioned by wallet", async () => {
+      const walletExporter = new ParquetExporter({ dataDir, partitionBy: "wallet" });
+
+      const result = await walletExporter.exportInteractions(store);
+
+      expect(result.rowCount).toBe(0);
+      expect(result.filePath).toContain("interactions");
+    });
+
     it("exports interactions to parquet file", async () => {
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-1",
         created_at: "2024-01-15T10:00:00Z",
         agent_id: "agent-1",
@@ -68,7 +88,7 @@ describe("ParquetExporter", () => {
         summary: { amount: "100" },
       });
 
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-2",
         created_at: "2024-01-15T11:00:00Z",
         agent_id: "agent-1",
@@ -101,7 +121,7 @@ describe("ParquetExporter", () => {
     });
 
     it("partitions by date", async () => {
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-1",
         created_at: "2024-01-15T10:00:00Z",
         agent_id: "agent-1",
@@ -111,7 +131,7 @@ describe("ParquetExporter", () => {
         summary: {},
       });
 
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-2",
         created_at: "2024-01-16T10:00:00Z",
         agent_id: "agent-1",
@@ -133,7 +153,7 @@ describe("ParquetExporter", () => {
     it("partitions by wallet", async () => {
       const walletExporter = new ParquetExporter({ dataDir, partitionBy: "wallet" });
 
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-1",
         created_at: "2024-01-15T10:00:00Z",
         wallet_address: "0xwallet1",
@@ -142,7 +162,7 @@ describe("ParquetExporter", () => {
         summary: {},
       });
 
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-2",
         created_at: "2024-01-15T11:00:00Z",
         wallet_address: "0xwallet2",
@@ -159,10 +179,33 @@ describe("ParquetExporter", () => {
       expect(existsSync(interactionsDir)).toBe(true);
     });
 
+    it("uses an unknown wallet partition and default summary payload when wallet metadata is missing", async () => {
+      const walletExporter = new ParquetExporter({ dataDir, partitionBy: "wallet" });
+      vi.spyOn(store, "listInteractions").mockReturnValue(
+        [
+          {
+            id: "int-missing-wallet",
+            created_at: "2024-01-15T10:00:00Z",
+            protocol: undefined,
+            summary: undefined,
+          },
+        ] as unknown as ReturnType<Store["listInteractions"]>,
+      );
+
+      const result = await walletExporter.exportInteractions(store);
+      const reader = await ParquetReader.openFile(result.filePath);
+      const record = await reader.getCursor().next();
+      await reader.close();
+
+      expect(result.filePath).toContain("unknown");
+      expect(record?.protocol).toBeUndefined();
+      expect(record?.summary_json).toBe("{}");
+    });
+
     it("handles no partitioning", async () => {
       const noneExporter = new ParquetExporter({ dataDir, partitionBy: "none" });
 
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-1",
         created_at: "2024-01-15T10:00:00Z",
         wallet_address: "0xwallet",
@@ -178,7 +221,7 @@ describe("ParquetExporter", () => {
     });
 
     it("filters by date range", async () => {
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-1",
         created_at: "2024-01-15T10:00:00Z",
         wallet_address: "0xwallet",
@@ -187,7 +230,7 @@ describe("ParquetExporter", () => {
         summary: {},
       });
 
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-2",
         created_at: "2024-01-20T10:00:00Z",
         wallet_address: "0xwallet",
@@ -196,7 +239,7 @@ describe("ParquetExporter", () => {
         summary: {},
       });
 
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-3",
         created_at: "2024-01-25T10:00:00Z",
         wallet_address: "0xwallet",
@@ -214,7 +257,7 @@ describe("ParquetExporter", () => {
     });
 
     it("filters with only start date", async () => {
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-1",
         created_at: "2024-01-15T10:00:00Z",
         wallet_address: "0xwallet",
@@ -223,7 +266,7 @@ describe("ParquetExporter", () => {
         summary: {},
       });
 
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-2",
         created_at: "2024-01-20T10:00:00Z",
         wallet_address: "0xwallet",
@@ -240,7 +283,7 @@ describe("ParquetExporter", () => {
     });
 
     it("filters with only end date", async () => {
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-1",
         created_at: "2024-01-15T10:00:00Z",
         wallet_address: "0xwallet",
@@ -249,7 +292,7 @@ describe("ParquetExporter", () => {
         summary: {},
       });
 
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-2",
         created_at: "2024-01-20T10:00:00Z",
         wallet_address: "0xwallet",
@@ -266,7 +309,7 @@ describe("ParquetExporter", () => {
     });
 
     it("handles interactions with null optional fields", async () => {
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-1",
         created_at: "2024-01-15T10:00:00Z",
         summary: {},
@@ -282,12 +325,12 @@ describe("ParquetExporter", () => {
       await reader.close();
 
       expect(record?.id).toBe("int-1");
-      expect(record?.agent_id).toBeNull();
-      expect(record?.wallet_address).toBeNull();
+      expect(record?.agent_id).toBeUndefined();
+      expect(record?.wallet_address).toBeUndefined();
     });
 
     it("serializes summary as JSON", async () => {
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-1",
         created_at: "2024-01-15T10:00:00Z",
         wallet_address: "0xwallet",
@@ -319,7 +362,7 @@ describe("ParquetExporter", () => {
     });
 
     it("exports settlements to parquet file", async () => {
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-1",
         created_at: "2024-01-15T10:00:00Z",
         wallet_address: "0xwallet",
@@ -352,7 +395,7 @@ describe("ParquetExporter", () => {
     });
 
     it("handles settlements with null tx_hash", async () => {
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-1",
         created_at: "2024-01-15T10:00:00Z",
         wallet_address: "0xwallet",
@@ -377,11 +420,35 @@ describe("ParquetExporter", () => {
       const record = await cursor.next();
       await reader.close();
 
-      expect(record?.tx_hash).toBeNull();
+      expect(record?.tx_hash).toBeUndefined();
+    });
+
+    it("serializes empty settlement metadata when the record omits it", async () => {
+      vi.spyOn(store, "listInteractions").mockReturnValue([
+        {
+          id: "int-settlement-null",
+          created_at: "2024-01-15T10:00:00Z",
+          protocol: "x402",
+          summary: {},
+        },
+      ] as unknown as ReturnType<Store["listInteractions"]>);
+      vi.spyOn(store, "getSettlement").mockReturnValue({
+        id: "settlement-null",
+        interaction_id: "int-settlement-null",
+        status: "pending",
+        metadata: undefined,
+      } as unknown as ReturnType<Store["getSettlement"]>);
+
+      const result = await exporter.exportSettlements(store);
+      const reader = await ParquetReader.openFile(result.filePath);
+      const record = await reader.getCursor().next();
+      await reader.close();
+
+      expect(record?.metadata_json).toBe("{}");
     });
 
     it("serializes metadata as JSON", async () => {
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-1",
         created_at: "2024-01-15T10:00:00Z",
         wallet_address: "0xwallet",
@@ -458,7 +525,7 @@ describe("ParquetExporter", () => {
     it("handles transactions with null optional fields", async () => {
       store.upsertBaseTransaction({
         tx_hash: "0xtx1",
-        status: "pending",
+        status: "unknown",
         raw: {},
         created_at: "2024-01-15T10:00:00Z",
       });
@@ -466,6 +533,30 @@ describe("ParquetExporter", () => {
       const result = await exporter.exportBaseTransactions(store, "0xwallet");
 
       expect(result.rowCount).toBe(0);
+    });
+
+    it("supports wallet partitioning for empty and populated base transaction exports", async () => {
+      const walletExporter = new ParquetExporter({ dataDir, partitionBy: "wallet" });
+      const emptyResult = await walletExporter.exportBaseTransactions(store, "0xwallet");
+
+      expect(emptyResult.filePath).toContain("0xwallet");
+
+      vi.spyOn(store, "listBaseTransactionsByWallet").mockReturnValue([
+        {
+          tx_hash: "0xtx-wallet",
+          status: "confirmed",
+          block_number: undefined,
+          created_at: "2024-01-15T10:00:00Z",
+        },
+      ] as unknown as ReturnType<Store["listBaseTransactionsByWallet"]>);
+
+      const result = await walletExporter.exportBaseTransactions(store, "0xwallet");
+      const reader = await ParquetReader.openFile(result.filePath);
+      const record = await reader.getCursor().next();
+      await reader.close();
+
+      expect(result.filePath).toContain("0xwallet");
+      expect(record?.block_number).toBeUndefined();
     });
   });
 
@@ -543,14 +634,39 @@ describe("ParquetExporter", () => {
       const record = await cursor.next();
       await reader.close();
 
-      expect(record?.token_address).toBeNull();
-      expect(record?.token_symbol).toBeNull();
+      expect(record?.token_address).toBeUndefined();
+      expect(record?.token_symbol).toBeUndefined();
+    });
+
+    it("supports wallet partitioning for empty and populated transfer exports", async () => {
+      const walletExporter = new ParquetExporter({ dataDir, partitionBy: "wallet" });
+      const emptyResult = await walletExporter.exportTokenTransfers(store, "0xwallet");
+
+      expect(emptyResult.filePath).toContain("0xwallet");
+
+      vi.spyOn(store, "listTokenTransfersByWallet").mockReturnValue([
+        {
+          id: "transfer-wallet",
+          tx_hash: "0xtx-wallet",
+          token_address: undefined,
+          token_symbol: "USDC",
+          created_at: "2024-01-15T10:00:00Z",
+        },
+      ] as unknown as ReturnType<Store["listTokenTransfersByWallet"]>);
+
+      const result = await walletExporter.exportTokenTransfers(store, "0xwallet");
+      const reader = await ParquetReader.openFile(result.filePath);
+      const record = await reader.getCursor().next();
+      await reader.close();
+
+      expect(result.filePath).toContain("0xwallet");
+      expect(record?.token_address).toBeUndefined();
     });
   });
 
   describe("exportAll", () => {
     it("exports all entities", async () => {
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-1",
         created_at: "2024-01-15T10:00:00Z",
         wallet_address: "0xwallet",
@@ -582,7 +698,7 @@ describe("ParquetExporter", () => {
     });
 
     it("exports evidence records", async () => {
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-1",
         created_at: "2024-01-15T10:00:00Z",
         wallet_address: "0xwallet",
@@ -607,8 +723,35 @@ describe("ParquetExporter", () => {
       expect(existsSync(result.filePath)).toBe(true);
     });
 
+    it("serializes empty evidence payloads when omitted", async () => {
+      vi.spyOn(store, "listInteractions").mockReturnValue([
+        {
+          id: "int-evidence-null",
+          created_at: "2024-01-15T10:00:00Z",
+          protocol: "x402",
+          summary: {},
+        },
+      ] as unknown as ReturnType<Store["listInteractions"]>);
+      vi.spyOn(store, "getEvidence").mockReturnValue([
+        {
+          id: "evidence-null",
+          interaction_id: "int-evidence-null",
+          kind: "x402",
+          payload: undefined,
+          created_at: "2024-01-15T10:00:00Z",
+        },
+      ] as unknown as ReturnType<Store["getEvidence"]>);
+
+      const result = await exporter.exportEvidence(store);
+      const reader = await ParquetReader.openFile(result.filePath);
+      const record = await reader.getCursor().next();
+      await reader.close();
+
+      expect(record?.payload_json).toBe("{}");
+    });
+
     it("exports wallet snapshots", async () => {
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-1",
         created_at: "2024-01-15T10:00:00Z",
         wallet_address: "0xwallet",
@@ -635,8 +778,42 @@ describe("ParquetExporter", () => {
       expect(existsSync(result.filePath)).toBe(true);
     });
 
+    it("exports wallet snapshots with nullable optional fields", async () => {
+      vi.spyOn(store, "listInteractions").mockReturnValue([
+        {
+          id: "int-snapshot-null",
+          created_at: "2024-01-15T10:00:00Z",
+          protocol: "x402",
+          summary: {},
+        },
+      ] as unknown as ReturnType<Store["listInteractions"]>);
+      vi.spyOn(store, "getWalletSnapshot").mockReturnValue({
+        id: "snapshot-null",
+        interaction_id: "int-snapshot-null",
+        created_at: "2024-01-15T10:00:00Z",
+        wallet_address: undefined,
+        balance: undefined,
+        allowance: undefined,
+        max_tx: undefined,
+        approvals_required: undefined,
+        metadata: undefined,
+      } as unknown as ReturnType<Store["getWalletSnapshot"]>);
+
+      const result = await exporter.exportWalletSnapshots(store);
+      const reader = await ParquetReader.openFile(result.filePath);
+      const record = await reader.getCursor().next();
+      await reader.close();
+
+      expect(record?.wallet_address).toBeUndefined();
+      expect(record?.balance).toBeUndefined();
+      expect(record?.allowance).toBeUndefined();
+      expect(record?.max_tx).toBeUndefined();
+      expect(record?.approvals_required).toBeUndefined();
+      expect(record?.metadata_json).toBe("{}");
+    });
+
     it("exports receipts", async () => {
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-1",
         created_at: "2024-01-15T10:00:00Z",
         wallet_address: "0xwallet",
@@ -660,11 +837,186 @@ describe("ParquetExporter", () => {
       expect(result.rowCount).toBe(1);
       expect(existsSync(result.filePath)).toBe(true);
     });
+
+    it("exports receipts with nullable optional fields", async () => {
+      vi.spyOn(store, "listInteractions").mockReturnValue([
+        {
+          id: "int-receipt-null",
+          created_at: "2024-01-15T10:00:00Z",
+          protocol: "x402",
+          summary: {},
+        },
+      ] as unknown as ReturnType<Store["listInteractions"]>);
+      vi.spyOn(store, "listReceiptsByInteraction").mockReturnValue([
+        {
+          id: "receipt-null",
+          interaction_id: undefined,
+          tx_hash: "0xtx-null",
+          raw: undefined,
+          created_at: "2024-01-15T10:00:00Z",
+        },
+      ] as unknown as ReturnType<Store["listReceiptsByInteraction"]>);
+
+      const result = await exporter.exportReceipts(store);
+      const reader = await ParquetReader.openFile(result.filePath);
+      const record = await reader.getCursor().next();
+      await reader.close();
+
+      expect(record?.interaction_id).toBeUndefined();
+      expect(record?.raw_json).toBe("{}");
+    });
+
+    it("exports attestations for a wallet", async () => {
+      store.upsertAttestations([
+        {
+          id: "att-1",
+          recipient: "0xwallet",
+          tx_hash: "0xtx1",
+          chain_id: 8453,
+          raw: { ok: true },
+          created_at: "2024-01-15T10:00:00Z",
+        },
+      ]);
+
+      const result = await exporter.exportAttestations(store, "0xwallet");
+      const reader = await ParquetReader.openFile(result.filePath);
+      const record = await reader.getCursor().next();
+      await reader.close();
+
+      expect(result.rowCount).toBe(1);
+      expect(record?.id).toBe("att-1");
+    });
+
+    it("returns an empty attestation export when no wallet is provided", async () => {
+      const result = await exporter.exportAttestations(store);
+
+      expect(result.rowCount).toBe(0);
+      expect(result.filePath).toContain("attestations");
+    });
+
+    it("exports attestations with nullable optional fields", async () => {
+      vi.spyOn(store, "listAttestationsByWallet").mockReturnValue([
+        {
+          id: "att-nullable",
+          attester: undefined,
+          recipient: undefined,
+          schema_id: undefined,
+          tx_hash: undefined,
+          chain_id: undefined,
+          raw: undefined,
+          created_at: "2024-01-15T10:00:00Z",
+        },
+      ] as unknown as ReturnType<Store["listAttestationsByWallet"]>);
+
+      const result = await exporter.exportAttestations(store, "0xwallet");
+      const reader = await ParquetReader.openFile(result.filePath);
+      const record = await reader.getCursor().next();
+      await reader.close();
+
+      expect(record?.attester).toBeUndefined();
+      expect(record?.recipient).toBeUndefined();
+      expect(record?.schema_id).toBeUndefined();
+      expect(record?.tx_hash).toBeUndefined();
+      expect(record?.chain_id).toBeUndefined();
+      expect(record?.raw_json).toBe("{}");
+    });
+
+    it("exports receipts scoped to a single interaction id", async () => {
+      upsertInteraction({
+        id: "int-scoped",
+        created_at: "2024-01-15T10:00:00Z",
+        wallet_address: "0xwallet",
+      });
+      store.upsertReceipts([
+        {
+          id: "receipt-scoped",
+          interaction_id: "int-scoped",
+          raw: { ok: true },
+          created_at: "2024-01-15T10:00:00Z",
+        },
+      ]);
+
+      const result = await exporter.exportReceipts(store, "int-scoped");
+
+      expect(result.rowCount).toBe(1);
+      expect(existsSync(result.filePath)).toBe(true);
+    });
+
+    it("exports wallet-scoped artifacts during full exports", async () => {
+      const createdAt = new Date().toISOString();
+      upsertInteraction({
+        id: "int-wallet-success",
+        created_at: createdAt,
+        wallet_address: "0xwallet",
+      });
+      store.upsertBaseTransaction({
+        tx_hash: "0xtx-wallet",
+        status: "confirmed",
+        from: "0xwallet",
+        raw: {},
+        created_at: createdAt,
+      });
+      store.upsertTokenTransfers([
+        {
+          id: "transfer-wallet",
+          tx_hash: "0xtx-wallet",
+          from: "0xwallet",
+          raw: {},
+          created_at: createdAt,
+        },
+      ]);
+      store.upsertAttestations([
+        {
+          id: "att-wallet",
+          recipient: "0xwallet",
+          raw: {},
+          created_at: createdAt,
+        },
+      ]);
+
+      const results = await exporter.exportAll(store);
+
+      expect(results["baseTransactions_0xwallet"].rowCount).toBe(1);
+      expect(results["tokenTransfers_0xwallet"].rowCount).toBe(1);
+      expect(results["attestations_0xwallet"].rowCount).toBe(1);
+    });
+
+    it("captures export failures with failed export placeholders", async () => {
+      const createdAt = new Date().toISOString();
+
+      upsertInteraction({
+        id: "int-wallet",
+        created_at: createdAt,
+        wallet_address: "0xwallet",
+      });
+      vi.spyOn(exporter, "exportInteractions").mockRejectedValueOnce(new Error("interactions"));
+      vi.spyOn(exporter, "exportSettlements").mockRejectedValueOnce(new Error("settlements"));
+      vi.spyOn(exporter, "exportEvidence").mockRejectedValueOnce(new Error("evidence"));
+      vi.spyOn(exporter, "exportWalletSnapshots").mockRejectedValueOnce(new Error("walletSnapshots"));
+      vi.spyOn(exporter, "exportReceipts").mockRejectedValueOnce(new Error("receipts"));
+      vi.spyOn(exporter, "exportBaseTransactions").mockRejectedValueOnce(new Error("baseTransactions"));
+      vi.spyOn(exporter, "exportTokenTransfers").mockRejectedValueOnce(new Error("tokenTransfers"));
+      vi.spyOn(exporter, "exportAttestations").mockRejectedValueOnce(new Error("attestations"));
+      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      const results = await exporter.exportAll(store);
+
+      expect(results.interactions).toEqual(expect.objectContaining({ filePath: "", rowCount: 0 }));
+      expect(results.settlements).toEqual(expect.objectContaining({ filePath: "", rowCount: 0 }));
+      expect(results.evidence).toEqual(expect.objectContaining({ filePath: "", rowCount: 0 }));
+      expect(results.walletSnapshots).toEqual(expect.objectContaining({ filePath: "", rowCount: 0 }));
+      expect(results.receipts).toEqual(expect.objectContaining({ filePath: "", rowCount: 0 }));
+      expect(results["baseTransactions_0xwallet"]).toEqual(expect.objectContaining({ filePath: "", rowCount: 0 }));
+      expect(results["tokenTransfers_0xwallet"]).toEqual(expect.objectContaining({ filePath: "", rowCount: 0 }));
+      expect(results["attestations_0xwallet"]).toEqual(expect.objectContaining({ filePath: "", rowCount: 0 }));
+
+      consoleSpy.mockRestore();
+    });
   });
 
   describe("bootstrapExport", () => {
     it("bootstraps all data successfully", async () => {
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-1",
         created_at: "2024-01-15T10:00:00Z",
         wallet_address: "0xwallet",
@@ -686,6 +1038,20 @@ describe("ParquetExporter", () => {
 
       expect(result.success).toBe(true);
       expect(result.results.interactions.rowCount).toBe(0);
+    });
+
+    it("reports failed exports during bootstrap", async () => {
+      vi.spyOn(exporter, "exportAll").mockResolvedValue({
+        interactions: { filePath: "", rowCount: 0, timestamp: "2024-01-01T00:00:00Z" },
+      });
+      const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+      const result = await exporter.bootstrapExport(store);
+
+      expect(result.success).toBe(false);
+      expect(result.errors).toEqual(["Failed to export interactions"]);
+
+      consoleSpy.mockRestore();
     });
   });
 });

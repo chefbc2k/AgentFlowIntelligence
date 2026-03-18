@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { PerformanceBenchmark } from "../server/performance-benchmark";
 import type { Store } from "../server/store";
 import type { InteractionRecord } from "../server/types";
@@ -12,7 +12,7 @@ describe("PerformanceBenchmark", () => {
     const mockInteractions: InteractionRecord[] = Array.from({ length: 50 }, (_, i) => ({
       id: `int${i}`,
       created_at: new Date(Date.now() - i * 24 * 60 * 60 * 1000).toISOString(),
-      protocol: i % 3 === 0 ? "locus" : i % 3 === 1 ? "x402" : "peac",
+      protocol: i % 2 === 0 ? "locus" : "x402",
       wallet_address: i % 2 === 0 ? "0x123" : "0x456",
       counterparty: i % 4 === 0 ? "service1" : i % 4 === 1 ? "service2" : i % 4 === 2 ? "service3" : "service4",
       summary: {},
@@ -185,6 +185,43 @@ describe("PerformanceBenchmark", () => {
       });
 
       expect(result.flowAggregates).toBeDefined();
+    });
+
+    it("classifies good cache effectiveness from benchmark summaries", async () => {
+      vi.spyOn(benchmark, "benchmarkFlowAggregates").mockResolvedValue({
+        suite: "flow_aggregates",
+        timestamp: "2024-01-01T00:00:00Z",
+        results: [],
+        summary: {
+          directAvgMs: 20,
+          cachedColdAvgMs: 10,
+          cachedWarmAvgMs: 1,
+          speedupCachedWarm: 20,
+        },
+      });
+
+      const result = await benchmark.runFullBenchmark({ iterations: 1 });
+
+      expect(result.overallSummary.cacheEffectiveness).toBe("good");
+    });
+
+    it("defaults iterations and classifies excellent cache effectiveness from benchmark summaries", async () => {
+      vi.spyOn(benchmark, "benchmarkFlowAggregates").mockResolvedValue({
+        suite: "flow_aggregates",
+        timestamp: "2024-01-01T00:00:00Z",
+        results: [],
+        summary: {
+          directAvgMs: 120,
+          cachedColdAvgMs: 20,
+          cachedWarmAvgMs: 1,
+          speedupCachedWarm: 120,
+        },
+      });
+
+      const result = await benchmark.runFullBenchmark();
+
+      expect(result.overallSummary.avgSpeedup).toBe(120);
+      expect(result.overallSummary.cacheEffectiveness).toBe("excellent");
     });
   });
 

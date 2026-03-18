@@ -23,6 +23,7 @@ describe("JobScheduler", () => {
     easBaseUrl: "https://base.easscan.org/graphql",
     easSepoliaUrl: "https://base-sepolia.easscan.org/graphql",
     enableBackgroundJobs: true,
+    enableParquetExport: false,
     ...overrides,
   });
 

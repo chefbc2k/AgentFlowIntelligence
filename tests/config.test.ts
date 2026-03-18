@@ -17,6 +17,7 @@ const ENV_KEYS = [
   "AFI_DUNE_API_KEY",
   "AFI_GRAPH_API_KEY",
   "AFI_ENABLE_BACKGROUND_JOBS",
+  "AFI_ENABLE_PARQUET_EXPORT",
 ] as const;
 
 function withEnv(next: Partial<Record<(typeof ENV_KEYS)[number], string>>, fn: () => void) {
@@ -75,6 +76,7 @@ describe("config", () => {
         AFI_DUNE_API_KEY: "dune",
         AFI_GRAPH_API_KEY: "graph",
         AFI_ENABLE_BACKGROUND_JOBS: "false",
+        AFI_ENABLE_PARQUET_EXPORT: "true",
       },
       () => {
         const config = getConfig();
@@ -83,6 +85,7 @@ describe("config", () => {
         expect(config.duneApiKey).toBe("dune");
         expect(config.graphApiKey).toBe("graph");
         expect(config.enableBackgroundJobs).toBe(false);
+        expect(config.enableParquetExport).toBe(true);
       },
     );
   });

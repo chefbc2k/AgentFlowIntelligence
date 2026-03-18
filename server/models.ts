@@ -567,6 +567,53 @@ export interface ModelMetadata {
   hyperparameters: Record<string, unknown>;
 }
 
+/**
+ * Runtime contract for Python-backed model implementations.
+ *
+ * The TypeScript layer intentionally exposes the absence of a native ML runtime
+ * instead of pretending the model methods are available locally.
+ */
+export const PYTHON_MODEL_RUNTIME = Object.freeze({
+  runtime: "python",
+  library: "scikit-learn",
+  serializers: ["pickle", "joblib"] as const,
+} as const);
+
+export type PythonModelRuntime = typeof PYTHON_MODEL_RUNTIME;
+
+export type PythonModelName = "AnomalyDetectionModel" | "ClusteringModel";
+export type PythonModelOperation = "load" | "train" | "predict";
+
+export interface PythonModelRequirement {
+  model: PythonModelName;
+  operation: PythonModelOperation;
+  runtime: PythonModelRuntime;
+  message: string;
+}
+
+export class PythonModelImplementationRequiredError extends Error {
+  readonly requirement: PythonModelRequirement;
+
+  constructor(requirement: PythonModelRequirement) {
+    super(`${requirement.model}.${requirement.operation} is only available in the ${requirement.runtime.runtime} runtime.`);
+    this.name = "PythonModelImplementationRequiredError";
+    this.requirement = requirement;
+  }
+}
+
+function raisePythonModelImplementationRequiredError(
+  model: PythonModelName,
+  operation: PythonModelOperation,
+  message: string,
+): never {
+  throw new PythonModelImplementationRequiredError({
+    model,
+    operation,
+    runtime: PYTHON_MODEL_RUNTIME,
+    message,
+  });
+}
+
 // ============================================================================
 // ML MODEL STUBS (REQUIRE PYTHON/SCIKIT-LEARN IMPLEMENTATION)
 // ============================================================================
@@ -624,12 +671,11 @@ export class AnomalyDetectionModel {
    * Load trained model from file
    * In Python: pickle.load() or joblib.load()
    */
-  async load(modelPath: string): Promise<void> {
-    // STUB: In production, this would load a serialized scikit-learn model
-    // via a Python bridge (e.g., using child_process to call Python script)
-    throw new Error(
-      "AnomalyDetectionModel.load() requires Python implementation. " +
-        "Use scikit-learn IsolationForest with pickle/joblib serialization."
+  async load(_modelPath: string): Promise<void> {
+    raisePythonModelImplementationRequiredError(
+      "AnomalyDetectionModel",
+      "load",
+      "Use scikit-learn IsolationForest with pickle/joblib serialization.",
     );
   }
 
@@ -637,14 +683,11 @@ export class AnomalyDetectionModel {
    * Train new model on features
    * In Python: IsolationForest.fit()
    */
-  async train(features: WalletFeatureVector[], options?: { contamination?: number }): Promise<void> {
-    // STUB: In production, this would:
-    // 1. Export features to Parquet
-    // 2. Call Python script to train IsolationForest
-    // 3. Serialize model with pickle/joblib
-    throw new Error(
-      "AnomalyDetectionModel.train() requires Python implementation. " +
-        "Use scikit-learn IsolationForest with StandardScaler preprocessing."
+  async train(_features: WalletFeatureVector[], _options?: { contamination?: number }): Promise<void> {
+    raisePythonModelImplementationRequiredError(
+      "AnomalyDetectionModel",
+      "train",
+      "Use scikit-learn IsolationForest with StandardScaler preprocessing.",
     );
   }
 
@@ -652,14 +695,11 @@ export class AnomalyDetectionModel {
    * Predict anomalies for wallet features
    * In Python: IsolationForest.predict() and decision_function()
    */
-  async predict(features: WalletFeatureVector[]): Promise<AnomalyDetectionResult[]> {
-    // STUB: In production, this would:
-    // 1. Export features to Parquet
-    // 2. Call Python script to run model.predict()
-    // 3. Load results from Parquet
-    throw new Error(
-      "AnomalyDetectionModel.predict() requires Python implementation. " +
-        "Use scikit-learn IsolationForest.predict() and decision_function()."
+  async predict(_features: WalletFeatureVector[]): Promise<AnomalyDetectionResult[]> {
+    raisePythonModelImplementationRequiredError(
+      "AnomalyDetectionModel",
+      "predict",
+      "Use scikit-learn IsolationForest.predict() and decision_function().",
     );
   }
 
@@ -739,11 +779,11 @@ export class ClusteringModel {
    * Load trained model from file
    * In Python: pickle.load() or joblib.load()
    */
-  async load(modelPath: string): Promise<void> {
-    // STUB: In production, this would load a serialized scikit-learn model
-    throw new Error(
-      "ClusteringModel.load() requires Python implementation. " +
-        "Use scikit-learn KMeans with pickle/joblib serialization."
+  async load(_modelPath: string): Promise<void> {
+    raisePythonModelImplementationRequiredError(
+      "ClusteringModel",
+      "load",
+      "Use scikit-learn KMeans with pickle/joblib serialization.",
     );
   }
 
@@ -751,14 +791,11 @@ export class ClusteringModel {
    * Train new model on features
    * In Python: KMeans.fit()
    */
-  async train(features: WalletFeatureVector[], options?: { n_clusters?: number }): Promise<void> {
-    // STUB: In production, this would:
-    // 1. Export features to Parquet
-    // 2. Call Python script to train KMeans
-    // 3. Serialize model with pickle/joblib
-    throw new Error(
-      "ClusteringModel.train() requires Python implementation. " +
-        "Use scikit-learn KMeans with StandardScaler preprocessing and silhouette_score for optimal k."
+  async train(_features: WalletFeatureVector[], _options?: { n_clusters?: number }): Promise<void> {
+    raisePythonModelImplementationRequiredError(
+      "ClusteringModel",
+      "train",
+      "Use scikit-learn KMeans with StandardScaler preprocessing and silhouette_score for optimal k.",
     );
   }
 
@@ -766,14 +803,11 @@ export class ClusteringModel {
    * Predict cluster assignments for wallet features
    * In Python: KMeans.predict() and transform()
    */
-  async predict(features: WalletFeatureVector[]): Promise<ClusteringResult[]> {
-    // STUB: In production, this would:
-    // 1. Export features to Parquet
-    // 2. Call Python script to run model.predict()
-    // 3. Load results from Parquet
-    throw new Error(
-      "ClusteringModel.predict() requires Python implementation. " +
-        "Use scikit-learn KMeans.predict() and transform() for distances."
+  async predict(_features: WalletFeatureVector[]): Promise<ClusteringResult[]> {
+    raisePythonModelImplementationRequiredError(
+      "ClusteringModel",
+      "predict",
+      "Use scikit-learn KMeans.predict() and transform() for distances.",
     );
   }
 
