@@ -156,6 +156,29 @@ function stubFetchForHappyPath() {
         });
       }
 
+      if (url.hostname === "api.dune.com") {
+        if (url.pathname === "/api/v1/sql/execute") {
+          return okJson({ execution_id: "exec-1" });
+        }
+        if (url.pathname === "/api/v1/execution/exec-1/results") {
+          return okJson({
+            state: "QUERY_STATE_COMPLETED",
+            result: {
+              rows: [
+                {
+                  blockTime: "2024-01-01T00:00:00Z",
+                  txHash: "0xtx",
+                  protocolName: "EscrowX",
+                  category: "Escrow",
+                  contractAddress: "0xcontract",
+                  chainId: 8453,
+                },
+              ],
+            },
+          });
+        }
+      }
+
       return notOk(404);
     }),
   );
@@ -164,6 +187,7 @@ function stubFetchForHappyPath() {
 describe("server api logic", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.useRealTimers();
   });
 
   it("sends ApiResponse payloads to JsonResponder", () => {
@@ -496,8 +520,170 @@ describe("server api logic", () => {
     expect(detail.status).toBe(200);
     expect((detail.body as { amountUSD: number | null }).amountUSD).toBe(2.5);
     expect(
-      (detail.body as { interaction: { protocolName?: string; protocolCategory?: string } }).interaction,
-    ).toEqual(expect.objectContaining({ protocolName: "EscrowX", protocolCategory: "escrow" }));
+      (
+        detail.body as {
+          interaction: {
+            protocolName?: string;
+            protocolCategory?: string;
+            protocolLabel?: { source: string; labeledAt: string; metadata: Record<string, unknown> };
+          };
+        }
+      ).interaction,
+    ).toEqual(
+      expect.objectContaining({
+        protocolName: "EscrowX",
+        protocolCategory: "escrow",
+        protocolLabel: expect.objectContaining({
+          source: "dune",
+          labeledAt: "2024-01-01T00:00:00Z",
+          metadata: {},
+        }),
+      }),
+    );
+  });
+
+  it("refreshes protocol labels for a selected interaction and exposes provenance on packet export", async () => {
+    vi.useFakeTimers();
+    stubFetchForHappyPath();
+
+    const store = createTestStore();
+    store.upsertInteraction({
+      id: "i-refresh",
+      created_at: "2024-01-02T00:00:00Z",
+      wallet_address: "0xwallet",
+      counterparty: "0xcontract",
+      protocol: "x402",
+      summary: {},
+    });
+
+    const api = createApi({
+      config: createTestConfig({ duneApiKey: "test-dune-key" }),
+      store,
+    });
+
+    const refreshPromise = api.enrichProtocolLabel("i-refresh");
+    await vi.runAllTimersAsync();
+    const refresh = await refreshPromise;
+    const refreshBody = refresh.body as unknown as {
+      refreshed: boolean;
+      message: string;
+      contractAddress: string;
+      protocolLabel: { source: string; protocol_name?: string; metadata: Record<string, unknown> };
+    };
+
+    expect(refresh.status).toBe(200);
+    expect(refreshBody).toEqual(
+      expect.objectContaining({
+        refreshed: true,
+        message: "Protocol label refreshed",
+        contractAddress: "0xcontract",
+        protocolLabel: expect.objectContaining({
+          source: "dune",
+          protocol_name: "EscrowX",
+          metadata: expect.objectContaining({
+            refreshMode: "interaction",
+            matchedBy: "contract",
+          }),
+        }),
+      }),
+    );
+
+    const packet = api.getInteractionPacket("i-refresh");
+    expect(packet.status).toBe(200);
+    expect(
+      (
+        packet.body as {
+          correlations: {
+            protocolLabel?: { source: string; contract?: string; labeledAt: string; metadata: Record<string, unknown> };
+          };
+        }
+      ).correlations.protocolLabel,
+    ).toEqual(
+      expect.objectContaining({
+        source: "dune",
+        contract: "0xcontract",
+        labeledAt: expect.any(String),
+        metadata: expect.objectContaining({
+          refreshMode: "interaction",
+        }),
+      }),
+    );
+  });
+
+  it("returns protocol refresh errors for missing contract and missing enrichment config", async () => {
+    const store = createTestStore();
+    store.upsertInteraction({
+      id: "i-no-contract",
+      created_at: "2024-01-01T00:00:00Z",
+      protocol: "x402",
+      summary: {},
+    });
+    store.upsertInteraction({
+      id: "i-no-config",
+      created_at: "2024-01-01T00:00:00Z",
+      counterparty: "0xcontract",
+      protocol: "x402",
+      summary: {},
+    });
+
+    const api = createApi({
+      config: createTestConfig(),
+      store,
+    });
+
+    expect((await api.enrichProtocolLabel("missing")).body).toEqual({ error: "not_found" });
+    expect((await api.enrichProtocolLabel("i-no-contract")).body).toEqual({ error: "missing_protocol_contract" });
+    expect((await api.enrichProtocolLabel("i-no-config")).body).toEqual({ error: "missing_protocol_enrichment_config" });
+  });
+
+  it("returns a deterministic unresolved protocol refresh result when no Dune match is found", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string) => {
+        const url = new URL(input);
+        if (url.hostname === "api.dune.com" && url.pathname === "/api/v1/sql/execute") {
+          return okJson({ execution_id: "exec-1" });
+        }
+        if (url.hostname === "api.dune.com" && url.pathname === "/api/v1/execution/exec-1/results") {
+          return okJson({
+            state: "QUERY_STATE_COMPLETED",
+            result: {
+              rows: [{ protocolName: "EscrowX", contractAddress: "0xother", chainId: 8453 }],
+            },
+          });
+        }
+        return notOk(404);
+      }),
+    );
+
+    const store = createTestStore();
+    store.upsertInteraction({
+      id: "i-unresolved",
+      created_at: "2024-01-01T00:00:00Z",
+      wallet_address: "0xwallet",
+      counterparty: "0xcontract",
+      protocol: "x402",
+      summary: {},
+    });
+
+    const api = createApi({
+      config: createTestConfig({ duneApiKey: "test-dune-key" }),
+      store,
+    });
+
+    const refreshPromise = api.enrichProtocolLabel("i-unresolved");
+    await vi.runAllTimersAsync();
+    const refresh = await refreshPromise;
+
+    expect(refresh.status).toBe(200);
+    expect(refresh.body).toEqual({
+      ok: true,
+      refreshed: false,
+      interactionId: "i-unresolved",
+      contractAddress: "0xcontract",
+      message: "Protocol label not resolved",
+    });
   });
 
   it("falls back to Base chain pricing only when the asset is present and keeps invalid prices null", () => {
@@ -1036,6 +1222,7 @@ describe("server api logic", () => {
     handlers.getInteraction({ params: { id: "missing" } }, res);
     handlers.getInteractionEnriched({ params: { id: "missing" } }, res);
     handlers.getInteractionPacket({ params: { id: "missing" } }, res);
+    await handlers.enrichProtocolLabel({ params: { id: "missing" } }, res);
     await handlers.ingestX402({ body: { headers: {}, txHash: "0xtx" } }, res);
     await handlers.enrichBase({ body: { txHash: "0xtx" } }, res);
     await handlers.baseTx({ params: { hash: "0xtx" } }, res);

@@ -1,6 +1,7 @@
 import express from "express";
 import cors from "cors";
 import { randomUUID } from "node:crypto";
+import { z } from "zod";
 import { getConfig } from "./config";
 import { Store } from "./store";
 import { extractX402Headers } from "./x402";
@@ -15,6 +16,7 @@ import { PricingService } from "./pricing";
 import { DuneClient } from "./dune";
 import { JobScheduler } from "./jobs";
 import { buildInteractionContext, buildPortableInteractionPacket } from "./packet";
+import { refreshProtocolLabelForInteraction } from "./protocol-labels";
 import type { WalletSnapshotRecord } from "./types";
 import type { AppConfig } from "./config";
 
@@ -82,7 +84,64 @@ export function send(res: JsonResponder, result: ApiResponse<unknown>) {
   res.status(result.status).json(result.body);
 }
 
+// API Request Validation Schemas
+const walletSnapshotSchema = z.object({
+  id: z.string().optional(),
+  interaction_id: z.string().optional(),
+  wallet_address: z.string().optional(),
+  balance: z.string().optional(),
+  allowance: z.string().optional(),
+  max_tx: z.string().optional(),
+  approvals_required: z.number().optional(),
+  metadata: z.record(z.unknown()).optional(),
+  created_at: z.string().optional(),
+});
+
+const x402TranscriptSchema = z.object({
+  challenge: z.object({
+    status: z.number(),
+    headers: z.record(z.string()),
+  }).optional(),
+  authorization: z.object({
+    status: z.number(),
+    headers: z.record(z.string()),
+  }).optional(),
+  settlement: z.object({
+    status: z.number(),
+    headers: z.record(z.string()),
+  }).optional(),
+});
+
+const ingestX402Schema = z.object({
+  headers: z.record(z.string()).optional(),
+  paymentSignature: z.string().optional(),
+  locusMetadata: z.record(z.unknown()).optional(),
+  txHash: z.string().optional(),
+  agentId: z.string().optional(),
+  walletAddress: z.string().optional(),
+  counterparty: z.string().optional(),
+  service: z.string().optional(),
+  url: z.string().optional(),
+  transcript: x402TranscriptSchema.optional(),
+  walletSnapshot: walletSnapshotSchema.optional(),
+});
+
+const peacReceiptSchema = z.object({
+  receipt: z.string(),
+  interactionId: z.string().optional(),
+  txHash: z.string().optional(),
+});
+
+function validateRequest<T>(schema: z.ZodSchema<T>, body: unknown): { success: true; data: T } | { success: false; error: string } {
+  const result = schema.safeParse(body);
+  if (!result.success) {
+    return { success: false, error: result.error.errors.map((e) => `${e.path.join(".")}: ${e.message}`).join("; ") };
+  }
+  return { success: true, data: result.data };
+}
+
 export function createApi({ config, store }: { config: AppConfig; store: Store }) {
+  const duneClient = config.duneApiKey ? new DuneClient(config.duneApiKey) : undefined;
   const withLocus = async <T,>(handler: (client: LocusClient) => Promise<T> | T): Promise<ApiResponse<T | ApiErrorBody>> => {
     if (!config.locusApiKey) {
       return fail(400, "missing_locus_key");
@@ -266,21 +325,59 @@ export function createApi({ config, store }: { config: AppConfig; store: Store }
       if (!interaction) return fail(404, "not_found");
       return ok(buildPortableInteractionPacket(store, interaction));
     },
+    enrichProtocolLabel: async (id: string) => {
+      const interaction = store.getInteraction(id);
+      if (!interaction) return fail(404, "not_found");
+
+      const result = await refreshProtocolLabelForInteraction(store, interaction, duneClient);
+      if (result.kind === "missing_contract") {
+        return fail(400, "missing_protocol_contract");
+      }
+
+      if (result.kind === "missing_enrichment_config") {
+        return fail(400, "missing_protocol_enrichment_config");
+      }
+
+      if (result.kind === "unresolved") {
+        return ok({
+          ok: true,
+          refreshed: false,
+          interactionId: id,
+          contractAddress: result.contractAddress,
+          message: "Protocol label not resolved",
+        });
+      }
+
+      return ok({
+        ok: true,
+        refreshed: result.refreshed,
+        interactionId: id,
+        contractAddress: result.contractAddress,
+        protocolLabel: result.protocolLabel,
+        message: "Protocol label refreshed",
+      });
+    },
     ingestX402: async (body: Record<string, unknown> | undefined) => {
-      const headers = extractX402Headers((body?.headers ?? {}) as Record<string, string>);
-      const paymentSignature = typeof body?.paymentSignature === "string" ? body.paymentSignature : undefined;
+      const validation = validateRequest(ingestX402Schema, body);
+      if (!validation.success) {
+        return fail(400, `validation_error: ${validation.error}`);
+      }
+      const validated = validation.data;
+
+      const headers = extractX402Headers(validated.headers ?? {});
+      const paymentSignature = validated.paymentSignature;
       if (!headers.paymentSignature && paymentSignature) {
         headers.paymentSignature = paymentSignature;
       }
-      const locusMetadata = body?.locusMetadata ?? undefined;
-      const txHash = body?.txHash ?? undefined;
-      const agentId = body?.agentId ?? config.locusAgentId;
-      const walletAddress = body?.walletAddress ?? undefined;
-      const counterparty = body?.counterparty ?? undefined;
-      const service = body?.service ?? undefined;
-      const url = body?.url ?? undefined;
-      const transcript = body?.transcript;
-      const walletSnapshotInput = body?.walletSnapshot as WalletSnapshotRecord | undefined;
+      const locusMetadata = validated.locusMetadata;
+      const txHash = validated.txHash;
+      const agentId = validated.agentId ?? config.locusAgentId;
+      const walletAddress = validated.walletAddress;
+      const counterparty = validated.counterparty;
+      const service = validated.service;
+      const url = validated.url;
+      const transcript = validated.transcript;
+      const walletSnapshotInput = validated.walletSnapshot as WalletSnapshotRecord | undefined;
 
       const bundle = normalizeInteraction({
         agentId: typeof agentId === "string" ? agentId : undefined,
@@ -510,21 +607,27 @@ export function createApi({ config, store }: { config: AppConfig; store: Store }
       return ok(attestations);
     },
     peacReceipt: async (body: Record<string, unknown> | undefined) => {
-      const receipt = body?.receipt;
-      const interactionId = body?.interactionId;
-      const txHash = body?.txHash;
-      const parsed = parsePeacReceipt(typeof receipt === "string" ? receipt : undefined);
-      if (!parsed) return fail(400, "missing_receipt");
+      const validation = validateRequest(peacReceiptSchema, body);
+      if (!validation.success) {
+        return fail(400, `validation_error: ${validation.error}`);
+      }
+      const validated = validation.data;
+
+      const receipt = validated.receipt;
+      const interactionId = validated.interactionId;
+      const txHash = validated.txHash;
+      const parsed = parsePeacReceipt(receipt);
+      if (!parsed) return fail(400, "invalid_receipt");
       store.upsertReceipts([
         {
           id: parsed.id,
-          interaction_id: typeof interactionId === "string" ? interactionId : undefined,
-          tx_hash: typeof txHash === "string" ? txHash : undefined,
+          interaction_id: interactionId,
+          tx_hash: txHash,
           raw: { status: parsed.status, decoded: parsed.decoded ?? null, raw: parsed.raw },
           created_at: new Date().toISOString(),
         },
       ]);
-      if (typeof interactionId === "string" && interactionId) {
+      if (interactionId) {
         store.upsertEvidence([
           {
             id: `${interactionId}:peac`,
@@ -552,6 +655,8 @@ export function createRouteHandlers(api: ReturnType<typeof createApi>) {
       send(res, api.getInteractionEnriched(String(req.params.id))),
     getInteractionPacket: (req: { params: { id: string | string[] } }, res: JsonResponder) =>
       send(res, api.getInteractionPacket(String(req.params.id))),
+    enrichProtocolLabel: async (req: { params: { id: string | string[] } }, res: JsonResponder) =>
+      send(res, await api.enrichProtocolLabel(String(req.params.id))),
     ingestX402: async (req: { body?: Record<string, unknown> }, res: JsonResponder) => send(res, await api.ingestX402(req.body)),
     enrichBase: async (req: { body?: Record<string, unknown> }, res: JsonResponder) => send(res, await api.enrichBase(req.body)),
     baseTx: async (req: { params: { hash: string | string[] } }, res: JsonResponder) => send(res, await api.baseTx(String(req.params.hash))),
@@ -631,6 +736,7 @@ export function createApp(options: CreateAppOptions = {}) {
   app.get("/api/interactions/:id", handlers.getInteraction as never);
   app.get("/api/interactions/:id/enriched", handlers.getInteractionEnriched as never);
   app.get("/api/interactions/:id/packet", handlers.getInteractionPacket as never);
+  app.post("/api/interactions/:id/enrich/protocol", handlers.enrichProtocolLabel as never);
   app.post("/api/ingest/x402", handlers.ingestX402 as never);
   app.post("/api/enrich/base", handlers.enrichBase as never);
   app.get("/api/base/tx/:hash", handlers.baseTx as never);

@@ -2,12 +2,14 @@ import type { InteractionRecord, SettlementRecord } from "./types";
 import type { Store } from "./store";
 import type { PricingService } from "./pricing";
 import { deriveControls } from "./controls";
+import { getProtocolAttribution } from "./protocol-labels";
 
 export type EnrichedInteractionRecord = InteractionRecord & {
   amountUSD: number | null;
   protocolName?: string;
   protocolCategory?: string;
   protocolContract?: string;
+  protocolLabel?: import("./types").ProtocolAttribution;
 };
 
 function toDateBucket(iso: string) {
@@ -158,31 +160,8 @@ function getStoredAmountUSD(store: Store, interaction: InteractionRecord): numbe
   return rawAmount * priceUSD;
 }
 
-function getProtocolContract(store: Store, interaction: InteractionRecord): string | undefined {
-  const settlement = store.getSettlement(interaction.id);
-  const metadata = settlement?.metadata;
-  const baseTx =
-    metadata && typeof metadata === "object"
-      ? ((metadata as Record<string, unknown>).baseTx as Record<string, unknown> | undefined)
-      : undefined;
-  const contractAddress = typeof baseTx?.to === "string" ? baseTx.to : interaction.counterparty;
-  return typeof contractAddress === "string" ? contractAddress : undefined;
-}
-
-function getProtocolLabel(store: Store, interaction: InteractionRecord) {
-  const contractAddress = getProtocolContract(store, interaction);
-  if (!contractAddress) {
-    return { contractAddress: undefined, label: undefined };
-  }
-
-  return {
-    contractAddress,
-    label: store.getProtocolLabel(contractAddress, 8453),
-  };
-}
-
 export function enrichInteractionForReadModel(store: Store, interaction: InteractionRecord): EnrichedInteractionRecord {
-  const { contractAddress, label } = getProtocolLabel(store, interaction);
+  const { contractAddress, label, attribution } = getProtocolAttribution(store, interaction);
 
   return {
     ...interaction,
@@ -190,6 +169,7 @@ export function enrichInteractionForReadModel(store: Store, interaction: Interac
     protocolName: label?.protocol_name,
     protocolCategory: label?.protocol_category,
     protocolContract: contractAddress,
+    protocolLabel: attribution,
   };
 }
 

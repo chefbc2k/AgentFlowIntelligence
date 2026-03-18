@@ -76,6 +76,14 @@ Rules:
 - Files/modules affected: `server/index.ts`, `server/normalize.ts`, `tests/api.test.ts`.
 - Validation status: `npm run validate` passed cleanly on March 17, 2026 with lint green, `tsc --noEmit` green, build green, server coverage `1399/1399` statements / `351/351` functions / `1122/1122` branches, and UI coverage `115/115` statements / `42/42` functions / `177/177` branches.
 
+## 2026-03-18
+
+- Added protocol-attribution provenance as a first-class AFI evidence surface: protocol label enrichment now resolves through a shared backend path, exposes source/metadata/timestamp on enriched interactions and packet exports, and supports deterministic on-demand refresh for a selected interaction.
+- Root cause fixed at source: protocol labels were already persisted with `source`, `metadata`, and `created_at`, but that provenance was dropped by the read model and packet export path, while refresh was only available through the background Dune job. Centralized contract/query-address resolution in `server/protocol-labels.ts`, reused it across metrics/jobs/packet export/API, and tightened the UI refresh handler so it operates on an explicit interaction id instead of nullable component state.
+- Files/modules affected: `server/protocol-labels.ts`, `server/index.ts`, `server/jobs.ts`, `server/metrics.ts`, `server/packet.ts`, `server/types.d.ts`, `src/app.tsx`, `tests/api.test.ts`, `tests/jobs.test.ts`, `tests/packet.test.ts`, `tests/store.test.ts`, `tests/protocol-labels.test.ts`, `tests/ui/app.test.tsx`.
+- Added regression coverage for protocol-label provenance round-trips, interaction-scoped enrichment success/failure cases, contract-address query fallback, deterministic Dune activity matching, packet/export attribution wiring, and UI refresh success/error/default-message branches.
+- Validation status: `npm run validate` passed cleanly on March 18, 2026 with lint green, `tsc --noEmit` green, build green, server coverage `1463/1463` statements / `365/365` functions / `1164/1164` branches, and UI coverage `129/129` statements / `47/47` functions / `195/195` branches.
+
 ## 2026-03-15
 
 - Confirmed Synthesis registration flow and project submission status.

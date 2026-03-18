@@ -112,6 +112,14 @@ describe("portable interaction packets", () => {
     expect(packet.version).toBe("afi.packet/v1");
     expect(packet.exportedAt).toBe("2024-01-02T00:00:00Z");
     expect(packet.interaction).toEqual(expect.objectContaining({ amountUSD: 2.5, protocolName: "EscrowX", protocolCategory: "escrow" }));
+    expect(packet.interaction.protocolLabel).toEqual(
+      expect.objectContaining({
+        source: "dune",
+        contract: "0xdef456",
+        labeledAt: "2024-01-01T00:00:00Z",
+        metadata: {},
+      }),
+    );
     expect(packet.protocol.x402?.packet.challenge.present).toBe(true);
     expect(packet.evidence.receipts).toEqual([
       expect.objectContaining({ id: "receipt-1", tx_hash: "0xtx", status: "verified", decoded: { ok: true }, raw: { receipt: "ok" } }),
@@ -119,6 +127,12 @@ describe("portable interaction packets", () => {
     expect(packet.evidence.attestations).toEqual([expect.objectContaining({ id: "att-1", txHash: "0xtx", chainId: 8453 })]);
     expect(packet.correlations.baseTransaction?.tx_hash).toBe("0xtx");
     expect(packet.correlations.walletSnapshot?.wallet_address).toBe("0xabc123");
+    expect(packet.correlations.protocolLabel).toEqual(
+      expect.objectContaining({
+        source: "dune",
+        contract: "0xdef456",
+      }),
+    );
     expect(packet.summary).toEqual(
       expect.objectContaining({
         handshakeStatus: "complete",
@@ -158,6 +172,7 @@ describe("portable interaction packets", () => {
     expect(packet.references.transaction).toBeUndefined();
     expect(packet.references.protocol).toEqual({ name: undefined, category: undefined, contract: "github" });
     expect(packet.interaction.amountUSD).toBeNull();
+    expect(packet.correlations.protocolLabel).toBeUndefined();
   });
 
   it("marks handshake phases correctly", () => {

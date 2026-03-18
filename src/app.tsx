@@ -13,6 +13,15 @@ type InteractionRow = {
   protocolCategory?: string;
 };
 
+type ProtocolLabelAttribution = {
+  contract?: string;
+  name?: string;
+  category?: string;
+  source: "dune" | "graph" | "defillama";
+  labeledAt: string;
+  metadata: Record<string, unknown>;
+};
+
 type X402Packet = {
   challenge: { present: boolean; decoded?: { amount?: string; asset?: string; network?: string; payTo?: string } };
   authorization: { hasSignature: boolean; decoded?: { payer?: string; network?: string } };
@@ -72,6 +81,7 @@ type InteractionDetail = {
       approvals_required?: boolean;
       metadata?: unknown;
     };
+    protocolLabel?: ProtocolLabelAttribution;
   };
   provenance: {
     source: "afi";
@@ -275,6 +285,8 @@ export function App() {
   const [counterparty, setCounterparty] = useState("");
   const [agentMetrics, setAgentMetrics] = useState<AgentMetrics | null>(null);
   const [counterpartyMetrics, setCounterpartyMetrics] = useState<CounterpartyMetrics | null>(null);
+  const [refreshingProtocol, setRefreshingProtocol] = useState(false);
+  const [protocolRefreshMessage, setProtocolRefreshMessage] = useState<string | null>(null);
 
   useEffect(() => {
     fetch("/api/interactions")
@@ -284,7 +296,7 @@ export function App() {
   }, []);
 
   const loadDetail = (id: string) => {
-    fetch(`/api/interactions/${id}/packet`)
+    return fetch(`/api/interactions/${id}/packet`)
       .then((res) => res.json())
       .then((detail: InteractionDetail) => {
         setSelected(detail);
@@ -296,6 +308,23 @@ export function App() {
         }
       })
       .catch(() => setSelected(null));
+  };
+
+  const refreshProtocolLabel = (interactionId: string) => {
+    setRefreshingProtocol(true);
+    setProtocolRefreshMessage(null);
+
+    fetch(`/api/interactions/${interactionId}/enrich/protocol`, { method: "POST" })
+      .then(async (res) => {
+        const payload = (await res.json()) as { error?: string; message?: string };
+        if (!res.ok) {
+          throw new Error(payload.error ?? "refresh_failed");
+        }
+        await loadDetail(interactionId);
+        setProtocolRefreshMessage(payload.message ?? "Protocol label refreshed");
+      })
+      .catch(() => setProtocolRefreshMessage("Protocol refresh failed"))
+      .finally(() => setRefreshingProtocol(false));
   };
 
   const loadAgentMetricsFor = (walletAddress: string) => {
@@ -678,6 +707,12 @@ export function App() {
 
                 <div className="afi-subpanel">
                   <h4>Settlement Correlation</h4>
+                  <div className="afi-form">
+                    <button onClick={() => refreshProtocolLabel(selected.interaction.id)} disabled={refreshingProtocol}>
+                      {refreshingProtocol ? "Refreshing..." : "Refresh protocol label"}
+                    </button>
+                    <span>{protocolRefreshMessage ?? " "}</span>
+                  </div>
                   <div className="afi-metrics">
                     <div>
                       <span>Settlement record</span>
@@ -710,6 +745,30 @@ export function App() {
                     <div>
                       <span>Tx explorer</span>
                       <strong>{selected.references.transaction?.explorerUrl ?? "—"}</strong>
+                    </div>
+                    <div>
+                      <span>Protocol source</span>
+                      <strong>{selected.correlations.protocolLabel?.source ?? "—"}</strong>
+                    </div>
+                    <div>
+                      <span>Labeled at</span>
+                      <strong>
+                        {selected.correlations.protocolLabel?.labeledAt
+                          ? new Date(selected.correlations.protocolLabel.labeledAt).toLocaleString()
+                          : "—"}
+                      </strong>
+                    </div>
+                    <div>
+                      <span>Protocol contract</span>
+                      <strong>{selected.correlations.protocolLabel?.contract ?? "—"}</strong>
+                    </div>
+                    <div>
+                      <span>Matched by</span>
+                      <strong>
+                        {typeof selected.correlations.protocolLabel?.metadata?.matchedBy === "string"
+                          ? selected.correlations.protocolLabel.metadata.matchedBy
+                          : "—"}
+                      </strong>
                     </div>
                   </div>
                 </div>

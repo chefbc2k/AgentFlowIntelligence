@@ -467,12 +467,18 @@ describe("store", () => {
       expect.objectContaining({
         protocol_name: "EscrowX",
         protocol_category: "escrow",
+        source: "dune",
+        metadata: { txHash: "0xtx" },
+        created_at: "2024-01-01T00:00:00Z",
       }),
     );
     expect(store.getProtocolLabel("0xcontract-null", 8453)).toEqual(
       expect.objectContaining({
         protocol_name: undefined,
         protocol_category: undefined,
+        source: "dune",
+        metadata: {},
+        created_at: "2024-01-01T00:00:00Z",
       }),
     );
 

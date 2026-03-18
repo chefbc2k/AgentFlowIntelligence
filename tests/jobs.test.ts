@@ -230,6 +230,17 @@ describe("JobScheduler", () => {
       "staking",
       "other",
     ]);
+    expect(upsertProtocolLabel.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({
+        source: "dune",
+        metadata: expect.objectContaining({
+          resolverVersion: "protocol-label/v1",
+          refreshMode: "background",
+          matchedBy: "contract",
+          attempts: [expect.objectContaining({ source: "dune", outcome: "matched" })],
+        }),
+      }),
+    );
   });
 
   it("skips direct protocol refresh when no wallets are active or no dune client exists", async () => {
@@ -372,6 +383,12 @@ describe("JobScheduler", () => {
     expect(store.getProtocolLabel("0xstake", 8453)?.protocol_category).toBe("staking");
     expect(store.getProtocolLabel("0xother", 8453)?.protocol_category).toBe("other");
     expect(store.getProtocolLabel("0xskip", 8453)).toBeUndefined();
+    expect(store.getProtocolLabel("0xdex", 8453)?.metadata).toEqual(
+      expect.objectContaining({
+        refreshMode: "background",
+        matchedBy: "contract",
+      }),
+    );
   });
 
   it("logs scheduled protocol job failures", async () => {

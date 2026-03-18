@@ -106,6 +106,18 @@ export interface AfiPacketReferences {
   protocol?: { name?: string; category?: string; contract?: string };
 }
 
+export type ProtocolCategory = "dex" | "bridge" | "escrow" | "lending" | "staking" | "other";
+export type ProtocolLabelSource = "dune" | "graph" | "defillama";
+
+export interface ProtocolAttribution {
+  contract?: string;
+  name?: string;
+  category?: ProtocolCategory;
+  source: ProtocolLabelSource;
+  labeledAt: string;
+  metadata: Record<string, unknown>;
+}
+
 export interface AfiPacketSummary {
   handshakeStatus: "complete" | "challenge-only" | "authorized" | "settled" | "not-captured";
   controlStatus: "within-limits" | "over-limit" | "unknown";
@@ -150,6 +162,7 @@ export interface AfiPacketCorrelations {
   settlement?: SettlementRecord;
   baseTransaction?: BaseTransactionRecord;
   walletSnapshot?: WalletSnapshotRecord;
+  protocolLabel?: ProtocolAttribution;
 }
 
 export interface AfiPacketProvenance {
@@ -167,6 +180,7 @@ export interface AfiPacketV1 {
     protocolName?: string;
     protocolCategory?: string;
     protocolContract?: string;
+    protocolLabel?: ProtocolAttribution;
   };
   controls: {
     amount: number | null;
@@ -270,8 +284,8 @@ export interface ProtocolLabelRecord {
   contract_address: string;
   chain_id: number;
   protocol_name?: string;
-  protocol_category?: "dex" | "bridge" | "escrow" | "lending" | "staking" | "other";
-  source: "dune" | "graph" | "defillama";
+  protocol_category?: ProtocolCategory;
+  source: ProtocolLabelSource;
   metadata: Record<string, unknown>;
   created_at: string;
 }

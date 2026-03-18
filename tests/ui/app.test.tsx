@@ -17,7 +17,7 @@ import {
 type FetchResponse = { json: () => Promise<unknown> };
 
 function jsonResponse(payload: unknown): FetchResponse {
-  return { json: () => Promise.resolve(payload) };
+  return { ok: true, json: () => Promise.resolve(payload) } as FetchResponse & { ok: boolean };
 }
 
 function makePacket(overrides: Record<string, unknown> = {}) {
@@ -67,6 +67,14 @@ function makePacket(overrides: Record<string, unknown> = {}) {
       settlement: { id: "s1", status: "confirmed", tx_hash: "0xtx" },
       baseTransaction: { tx_hash: "0xtx", status: "confirmed", from: "0xaaa", to: "0xmerchant" },
       walletSnapshot: { wallet_address: "0xwallet", allowance: "5", max_tx: "10", approvals_required: false },
+      protocolLabel: {
+        contract: "0xmerchant",
+        name: "EscrowX",
+        category: "escrow",
+        source: "dune" as const,
+        labeledAt: "2024-01-01T00:00:00Z",
+        metadata: { matchedBy: "contract" },
+      },
     },
     provenance: {
       source: "afi" as const,
@@ -345,6 +353,9 @@ describe("AFI UI", () => {
     expect(screen.getAllByText("0xtx").length).toBeGreaterThan(0);
     expect(screen.getByText("r1")).toBeInTheDocument();
     expect(screen.getByText("a1")).toBeInTheDocument();
+    expect(screen.getByText("Protocol source").parentElement?.querySelector("strong")).toHaveTextContent("dune");
+    expect(screen.getByText("Protocol contract").parentElement?.querySelector("strong")).toHaveTextContent("0xmerchant");
+    expect(screen.getByText("Matched by").parentElement?.querySelector("strong")).toHaveTextContent("contract");
 
     within(interactionsList).getAllByRole("button", { name: "View" })[0]?.click();
     expect(await screen.findByText("over-limit")).toBeInTheDocument();
@@ -637,6 +648,12 @@ describe("AFI UI", () => {
         receipts: [{ id: "r-fallback", raw: { ok: true }, created_at: "2024-01-01T00:00:00Z" }],
         attestations: [{ id: "a-fallback", raw: { ok: true }, created_at: "2024-01-01T00:00:00Z" }],
       },
+      correlations: {
+        settlement: undefined,
+        baseTransaction: undefined,
+        walletSnapshot: undefined,
+        protocolLabel: undefined,
+      },
     })));
     fetchMock.mockResolvedValueOnce(jsonResponse(makePacket({
       interaction: { id: "i-fallback", created_at: "2024-01-01T00:00:00Z", protocol: "x402", amountUSD: null },
@@ -688,6 +705,7 @@ describe("AFI UI", () => {
     expect(screen.getByText("Status: raw")).toBeInTheDocument();
     expect(screen.getByText("Schema: —")).toBeInTheDocument();
     expect(screen.getAllByText("Tx: —").length).toBeGreaterThan(0);
+    expect(screen.getByText("Protocol source").parentElement?.querySelector("strong")).toHaveTextContent("—");
 
     fireEvent.click(viewButton);
     expect(await screen.findByText("over-limit")).toBeInTheDocument();
@@ -695,6 +713,89 @@ describe("AFI UI", () => {
 
     fireEvent.click(viewButton);
     expect(await screen.findByText("within-limits")).toBeInTheDocument();
+  });
+
+  it("refreshes protocol provenance from the packet panel", async () => {
+    const interactions = [{ id: "i-refresh", created_at: "2024-01-01T00:00:00Z", protocol: "x402" }];
+
+    fetchMock.mockResolvedValueOnce(jsonResponse(interactions));
+    fetchMock.mockResolvedValueOnce(jsonResponse(makePacket({ interaction: { id: "i-refresh", created_at: "2024-01-01T00:00:00Z", protocol: "x402" } })));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ ok: true, refreshed: true, message: "Protocol label refreshed" }));
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        makePacket({
+          interaction: { id: "i-refresh", created_at: "2024-01-01T00:00:00Z", protocol: "x402" },
+          correlations: {
+            settlement: { id: "s1", status: "confirmed", tx_hash: "0xtx" },
+            baseTransaction: { tx_hash: "0xtx", status: "confirmed", from: "0xaaa", to: "0xmerchant" },
+            walletSnapshot: { wallet_address: "0xwallet", allowance: "5", max_tx: "10", approvals_required: false },
+            protocolLabel: {
+              contract: "0xmerchant",
+              name: "EscrowX",
+              category: "escrow",
+              source: "dune",
+              labeledAt: "2024-01-02T00:00:00Z",
+              metadata: { matchedBy: "contract" },
+            },
+          },
+        }),
+      ),
+    );
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "View" }));
+    expect(await screen.findByText("Refresh protocol label")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Refresh protocol label" }));
+
+    expect(await screen.findByText("Protocol label refreshed")).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith("/api/interactions/i-refresh/enrich/protocol", { method: "POST" });
+  });
+
+  it("uses the default success message when protocol refresh omits one", async () => {
+    const interactions = [{ id: "i-refresh-default", created_at: "2024-01-01T00:00:00Z", protocol: "x402" }];
+
+    fetchMock.mockResolvedValueOnce(jsonResponse(interactions));
+    fetchMock.mockResolvedValueOnce(jsonResponse(makePacket({ interaction: { id: "i-refresh-default", created_at: "2024-01-01T00:00:00Z", protocol: "x402" } })));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ ok: true, refreshed: true }));
+    fetchMock.mockResolvedValueOnce(jsonResponse(makePacket({ interaction: { id: "i-refresh-default", created_at: "2024-01-01T00:00:00Z", protocol: "x402" } })));
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "View" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Refresh protocol label" }));
+
+    expect(await screen.findByText("Protocol label refreshed")).toBeInTheDocument();
+  });
+
+  it("renders a protocol refresh failure message", async () => {
+    const interactions = [{ id: "i-refresh-fail", created_at: "2024-01-01T00:00:00Z", protocol: "x402" }];
+
+    fetchMock.mockResolvedValueOnce(jsonResponse(interactions));
+    fetchMock.mockResolvedValueOnce(jsonResponse(makePacket({ interaction: { id: "i-refresh-fail", created_at: "2024-01-01T00:00:00Z", protocol: "x402" } })));
+    fetchMock.mockRejectedValueOnce(new Error("refresh failed"));
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "View" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Refresh protocol label" }));
+
+    expect(await screen.findByText("Protocol refresh failed")).toBeInTheDocument();
+  });
+
+  it("treats non-ok protocol refresh responses as failures", async () => {
+    const interactions = [{ id: "i-refresh-http", created_at: "2024-01-01T00:00:00Z", protocol: "x402" }];
+
+    fetchMock.mockResolvedValueOnce(jsonResponse(interactions));
+    fetchMock.mockResolvedValueOnce(jsonResponse(makePacket({ interaction: { id: "i-refresh-http", created_at: "2024-01-01T00:00:00Z", protocol: "x402" } })));
+    fetchMock.mockResolvedValueOnce({ ok: false, json: () => Promise.resolve({}) } as FetchResponse & { ok: boolean });
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "View" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Refresh protocol label" }));
+
+    expect(await screen.findByText("Protocol refresh failed")).toBeInTheDocument();
   });
 
   it("covers metrics render branches + failure fallbacks", async () => {

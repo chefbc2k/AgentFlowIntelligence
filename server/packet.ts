@@ -1,5 +1,6 @@
 import { deriveControls } from "./controls";
 import { enrichInteractionForReadModel } from "./metrics";
+import { getProtocolAttribution } from "./protocol-labels";
 import type {
   AfiPacketV1,
   AttestationRecord,
@@ -144,6 +145,7 @@ export function buildPortableInteractionPacket(
 ): AfiPacketV1 {
   const enrichedInteraction = enrichInteractionForReadModel(store, interaction);
   const context = buildInteractionContext(store, interaction);
+  const { attribution } = getProtocolAttribution(store, interaction);
   const summary = interaction.summary as Record<string, unknown>;
   const settlementTxHash = context.settlement?.tx_hash ?? context.baseTransaction?.tx_hash ?? inferTxHash(interaction, context.settlement);
   const receipts = context.receipts.map(flattenReceipt);
@@ -178,6 +180,7 @@ export function buildPortableInteractionPacket(
       settlement: context.settlement,
       baseTransaction: context.baseTransaction,
       walletSnapshot: context.walletSnapshot,
+      protocolLabel: attribution,
     },
     provenance: {
       source: "afi",

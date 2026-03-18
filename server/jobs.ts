@@ -2,6 +2,7 @@ import { AppConfig } from "./config";
 import { Store } from "./store";
 import { PricingService } from "./pricing";
 import { DuneClient } from "./dune";
+import { buildProtocolLabelRecord } from "./protocol-labels";
 
 export interface JobSchedulerConfig {
   config: AppConfig;
@@ -168,25 +169,9 @@ export class JobScheduler {
         const activity = await this.duneClient.getProtocolActivity(wallet, startDate);
 
         for (const event of activity) {
-          if (event.contractAddress && event.protocolName) {
-            const labelId = `${event.chainId || 8453}:${event.contractAddress.toLowerCase()}`;
-
-            this.store.upsertProtocolLabel({
-              id: labelId,
-              contract_address: event.contractAddress.toLowerCase(),
-              chain_id: event.chainId || 8453,
-              protocol_name: event.protocolName,
-              protocol_category: this.categorizeProtocol(event.category),
-              source: "dune",
-              metadata: {
-                txHash: event.txHash,
-                blockTime: event.blockTime,
-                category: event.category,
-                amountUSD: event.amountUSD,
-              },
-              created_at: new Date().toISOString(),
-            });
-
+          const record = buildProtocolLabelRecord(event, "background", new Date().toISOString());
+          if (record) {
+            this.store.upsertProtocolLabel(record);
             totalLabels++;
           }
         }
@@ -199,24 +184,6 @@ export class JobScheduler {
     }
 
     console.log(`[JobScheduler] Protocol label refresh complete: ${totalLabels} labels updated`);
-  }
-
-  /**
-   * Map Dune category strings to protocol category types
-   */
-  private categorizeProtocol(
-    category?: string,
-  ): "dex" | "bridge" | "escrow" | "lending" | "staking" | "other" {
-    if (!category) return "other";
-
-    const lower = category.toLowerCase();
-    if (lower.includes("dex") || lower.includes("swap")) return "dex";
-    if (lower.includes("bridge")) return "bridge";
-    if (lower.includes("escrow")) return "escrow";
-    if (lower.includes("lend") || lower.includes("borrow")) return "lending";
-    if (lower.includes("stak")) return "staking";
-
-    return "other";
   }
 }
 
