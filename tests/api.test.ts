@@ -2,9 +2,43 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createApi, createApp, createRouteHandlers, send } from "../server/index";
 import type { AppConfig } from "../server/config";
-import { Store } from "../server/store";
+
+vi.mock("../server/db.js", async () => import("../server/db"));
+vi.mock("../server/parquet-export", () => ({
+  ParquetExporter: class {
+    async exportInteractions() {
+      return { filePath: "", rowCount: 0, timestamp: new Date().toISOString() };
+    }
+    async exportSettlements() {
+      return { filePath: "", rowCount: 0, timestamp: new Date().toISOString() };
+    }
+    async exportEvidence() {
+      return { filePath: "", rowCount: 0, timestamp: new Date().toISOString() };
+    }
+    async exportWalletSnapshots() {
+      return { filePath: "", rowCount: 0, timestamp: new Date().toISOString() };
+    }
+    async exportReceipts() {
+      return { filePath: "", rowCount: 0, timestamp: new Date().toISOString() };
+    }
+    async exportAttestations() {
+      return { filePath: "", rowCount: 0, timestamp: new Date().toISOString() };
+    }
+    async exportBaseTransactions() {
+      return { filePath: "", rowCount: 0, timestamp: new Date().toISOString() };
+    }
+    async exportTokenTransfers() {
+      return { filePath: "", rowCount: 0, timestamp: new Date().toISOString() };
+    }
+  },
+}));
+
+const [{ createApi, createApp, createRouteHandlers, send }, { Store }, { QueryCache }] = await Promise.all([
+  import("../server/index"),
+  import("../server/store"),
+  import("../server/query-cache"),
+]);
 
 const okJson = (payload: unknown) => ({
   ok: true,
@@ -32,6 +66,7 @@ function createTestConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     easBaseUrl: "https://base.easscan.org/graphql",
     easSepoliaUrl: "https://base-sepolia.easscan.org/graphql",
     enableBackgroundJobs: false,
+    enableParquetExport: false,
     ...overrides,
   };
 }
@@ -255,6 +290,194 @@ describe("server api logic", () => {
     expect(api.health().status).toBe(200);
     expect(api.listInteractions().body).toEqual([]);
     expect(api.getInteraction("missing").status).toBe(404);
+  });
+
+  it("reuses an injected query cache for metrics and invalidates it on ingestion", async () => {
+    const store = createTestStore();
+    const queryCache = new QueryCache({
+      agentMetricsTTL: 60,
+      counterpartyMetricsTTL: 60,
+      flowAggregateTTL: 60,
+      interactionListTTL: 60,
+      enablePerformanceMonitoring: true,
+    });
+    const getAgentMetricsSpy = vi.spyOn(queryCache, "getAgentMetrics");
+    const getCounterpartyMetricsSpy = vi.spyOn(queryCache, "getCounterpartyMetrics");
+    const getFlowAggregatesSpy = vi.spyOn(queryCache, "getFlowAggregates");
+    const invalidateSpy = vi.spyOn(queryCache, "invalidateOnIngestion");
+
+    const api = createApi({
+      config: createTestConfig(),
+      store,
+      queryCache,
+    });
+
+    api.agentMetrics("0xABC");
+    api.counterpartyMetrics("service1");
+    api.flowAggregates({ wallet: "0xABC", protocol: "locus" });
+
+    expect(getAgentMetricsSpy).toHaveBeenCalledWith(store, "0xABC");
+    expect(getCounterpartyMetricsSpy).toHaveBeenCalledWith(store, "service1");
+    expect(getFlowAggregatesSpy).toHaveBeenCalledWith(store, { wallet: "0xABC", protocol: "locus" });
+
+    await api.ingestX402({
+      headers: {},
+      walletAddress: "0xABC",
+      counterparty: "service1",
+      service: "/pay/send",
+    });
+
+    expect(invalidateSpy).toHaveBeenCalledWith(["0xABC"], ["service1"]);
+  });
+
+  it("exposes parquet and cache admin endpoints", async () => {
+    const store = createTestStore();
+    const queryCache = new QueryCache();
+    vi.spyOn(store, "bootstrapParquetExport").mockResolvedValue({
+      success: true,
+      results: {},
+      errors: [],
+    });
+    vi.spyOn(store, "batchExportToParquet")
+      .mockResolvedValueOnce({ interactions: { filePath: "ok.parquet", rowCount: 1, timestamp: "2024-01-01T00:00:00Z" } })
+      .mockRejectedValueOnce("batch failed");
+    const statsSpy = vi.spyOn(queryCache, "getStats");
+    const invalidateSpy = vi.spyOn(queryCache, "invalidateAll");
+
+    const api = createApi({
+      config: createTestConfig(),
+      store,
+      queryCache,
+    });
+    const handlers = createRouteHandlers(api);
+    const res = {
+      status: vi.fn().mockReturnThis(),
+      json: vi.fn().mockReturnThis(),
+    };
+
+    expect(await api.parquetBootstrap()).toEqual(
+      expect.objectContaining({ status: 200, body: { success: true, results: {}, errors: [] } }),
+    );
+    expect(await api.parquetBatchExport()).toEqual(
+      expect.objectContaining({
+        status: 200,
+        body: { interactions: { filePath: "ok.parquet", rowCount: 1, timestamp: "2024-01-01T00:00:00Z" } },
+      }),
+    );
+    expect(await api.parquetBatchExport()).toEqual(expect.objectContaining({ status: 500, body: { error: "batch failed" } }));
+    expect(api.flowAggregates({ wallet: "0xwallet" }).status).toBe(200);
+    expect(api.cacheStats().status).toBe(200);
+    expect(api.cacheInvalidate()).toEqual(expect.objectContaining({ status: 200, body: { ok: true, message: "cache_invalidated" } }));
+    expect(statsSpy).toHaveBeenCalled();
+    expect(invalidateSpy).toHaveBeenCalled();
+
+    await handlers.parquetBootstrap({}, res);
+    await handlers.parquetBatchExport({}, res);
+    handlers.flowAggregates({ query: { wallet: "0xwallet", startDate: "2024-01-01", endDate: "2024-01-02" } }, res);
+    handlers.flowAggregates({ query: { counterparty: ["service1"], protocol: ["x402"] } }, res);
+    handlers.cacheStats({}, res);
+    handlers.cacheInvalidate({}, res);
+    expect(res.status).toHaveBeenCalled();
+    expect(res.json).toHaveBeenCalled();
+  });
+
+  it("serves dashboard analytics from the shared sqlite store", () => {
+    const store = createTestStore();
+    store.upsertInteraction({
+      id: "dash-1",
+      created_at: "2024-01-15T10:00:00Z",
+      wallet_address: "0xWallet1",
+      counterparty: "merchant-1",
+      service: "service-1",
+      protocol: "x402",
+      summary: {},
+    });
+    store.upsertSettlement({
+      id: "dash-settlement-1",
+      interaction_id: "dash-1",
+      status: "confirmed",
+      metadata: {},
+    });
+    store.upsertInteraction({
+      id: "dash-2",
+      created_at: "2024-01-16T11:00:00Z",
+      wallet_address: "0xWallet2",
+      counterparty: "merchant-2",
+      service: "service-2",
+      protocol: "locus",
+      summary: {},
+    });
+
+    const api = createApi({
+      config: createTestConfig(),
+      store,
+    });
+    const handlers = createRouteHandlers(api);
+    const res = {
+      status: vi.fn().mockReturnThis(),
+      json: vi.fn().mockReturnThis(),
+    };
+
+    const result = api.dashboardAnalytics({ wallet: "0xwallet1", protocol: "X402" }, { topLimit: 1, recentLimit: 1 });
+    expect(result.status).toBe(200);
+    expect(result.body).toEqual(
+      expect.objectContaining({
+        filters: expect.objectContaining({ wallet: "0xwallet1", protocol: "X402" }),
+        totals: expect.objectContaining({
+          totalInteractions: 1,
+          uniqueWallets: 1,
+          uniqueCounterparties: 1,
+          confirmedSettlements: 1,
+          settlementRate: 1,
+        }),
+      }),
+    );
+    expect(result.body.topWallets).toEqual([
+      expect.objectContaining({ wallet_address: "0xWallet1", count: 1 }),
+    ]);
+    expect(result.body.recentInteractions).toEqual([
+      expect.objectContaining({ id: "dash-1", settlement_status: "confirmed" }),
+    ]);
+
+    handlers.dashboardAnalytics({ query: { wallet: "0xwallet1", protocol: "X402", topLimit: "1", recentLimit: "1" } }, res);
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        totals: expect.objectContaining({ totalInteractions: 1 }),
+      }),
+    );
+
+    handlers.dashboardAnalytics(
+      { query: { counterparty: "merchant-1", startDate: "2024-01-15T00:00:00Z", endDate: "2024-01-15T23:59:59Z" } },
+      res,
+    );
+    expect(res.json).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        filters: expect.objectContaining({
+          wallet: undefined,
+          counterparty: "merchant-1",
+          protocol: undefined,
+          startDate: "2024-01-15T00:00:00Z",
+          endDate: "2024-01-15T23:59:59Z",
+        }),
+      }),
+    );
+  });
+
+  it("runs query cache cleanup on the app interval", () => {
+    vi.useFakeTimers();
+    const queryCache = new QueryCache();
+    const cleanupSpy = vi.spyOn(queryCache, "cleanup");
+
+    createApp({
+      config: createTestConfig(),
+      store: createTestStore(),
+      queryCache,
+    });
+
+    vi.advanceTimersByTime(5 * 60 * 1000);
+
+    expect(cleanupSpy).toHaveBeenCalled();
   });
 
   it("returns enriched interaction rows from the list read model", () => {
@@ -1257,6 +1480,7 @@ describe("server api logic", () => {
     await handlers.peacReceipt({}, res);
     await handlers.agentMetrics({ params: { wallet: "0xwallet" } }, res);
     await handlers.counterpartyMetrics({ params: { id: "svc" } }, res);
+    await handlers.walletBehaviorModel({ params: { wallet: "0xwallet" } }, res);
 
     expect(res.status).toHaveBeenCalled();
     expect(res.json).toHaveBeenCalled();
@@ -1289,6 +1513,7 @@ describe("server api logic", () => {
 
     expect((await api.agentMetrics("0xwallet")).body).toEqual(expect.objectContaining({ wallet: "0xwallet" }));
     expect((await api.counterpartyMetrics("svc")).body).toEqual(expect.objectContaining({ counterparty: "svc" }));
+    expect((await api.walletBehaviorModel("0xwallet")).body).toEqual(expect.objectContaining({ wallet: "0xwallet" }));
   });
 
   it("omits x402 packet details for locus interactions", async () => {
@@ -1351,6 +1576,23 @@ describe("server api logic", () => {
       },
     });
     expect(withTranscript.status).toBe(200);
+
+    const withMinimalTranscript = await api.ingestX402({
+      headers: {},
+      transcript: {
+        requestUrl: "https://example.com/minimal",
+      },
+    });
+    expect(withMinimalTranscript.status).toBe(200);
+
+    const withAuthorizationOnlyTranscript = await api.ingestX402({
+      headers: {},
+      transcript: {
+        requestUrl: "https://example.com/auth-only",
+        authorization: {},
+      },
+    });
+    expect(withAuthorizationOnlyTranscript.status).toBe(200);
 
     // Test ingestX402 validation - should accept wallet snapshot
     const withSnapshot = await api.ingestX402({

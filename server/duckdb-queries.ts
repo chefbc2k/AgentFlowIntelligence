@@ -1,23 +1,72 @@
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, type SQLInputValue } from "node:sqlite";
+
+type DatabaseConnection = {
+  prepare(sql: string): {
+    all(...params: SQLInputValue[]): unknown[];
+  };
+  close?: () => void;
+};
+
+export interface DashboardAnalyticsFilters {
+  wallet?: string;
+  counterparty?: string;
+  protocol?: string;
+  startDate?: string;
+  endDate?: string;
+}
+
+export interface DashboardAnalyticsOptions {
+  topLimit?: number;
+  recentLimit?: number;
+}
+
+export interface DashboardAnalyticsResult {
+  filters: DashboardAnalyticsFilters;
+  totals: {
+    totalInteractions: number;
+    uniqueWallets: number;
+    uniqueCounterparties: number;
+    confirmedSettlements: number;
+    settlementRate: number;
+  };
+  dailySeries: Array<{ date: string; count: number }>;
+  topWallets: Array<{ wallet_address: string; count: number }>;
+  topCounterparties: Array<{ counterparty: string; count: number }>;
+  protocolSeries: Array<{ protocol: string; count: number }>;
+  settlementSuccessRateByCounterparty: Array<{ counterparty: string; total: number; confirmed: number; rate: number }>;
+  recentInteractions: Array<{
+    id: string;
+    created_at: string;
+    wallet_address: string | null;
+    counterparty: string | null;
+    service: string | null;
+    settlement_status: string | null;
+    tx_hash: string | null;
+  }>;
+}
 
 /**
- * DuckDB-inspired query engine using node:sqlite
- * Provides analytical queries over AFI data
- *
- * Note: This uses node:sqlite as a lightweight alternative to DuckDB
- * For production scale, consider upgrading to actual DuckDB with Parquet support
+ * SQLite-backed analytical query engine.
+ * Provides analytical queries over AFI data using node:sqlite.
  */
 export class DuckDBQueryEngine {
-  private db: DatabaseSync;
+  private db: DatabaseConnection;
+  private ownsConnection: boolean;
 
-  constructor(dbPath: string = ":memory:") {
-    this.db = new DatabaseSync(dbPath);
+  constructor(dbPathOrConnection: string | DatabaseConnection = ":memory:") {
+    if (typeof dbPathOrConnection === "string") {
+      this.db = new DatabaseSync(dbPathOrConnection);
+      this.ownsConnection = true;
+    } else {
+      this.db = dbPathOrConnection;
+      this.ownsConnection = false;
+    }
   }
 
   /**
    * Execute a raw SQL query
    */
-  query<T = unknown>(sql: string, params?: unknown[]): T[] {
+  query<T = unknown>(sql: string, params?: SQLInputValue[]): T[] {
     try {
       const stmt = this.db.prepare(sql);
       const result = params ? stmt.all(...params) : stmt.all();
@@ -25,6 +74,41 @@ export class DuckDBQueryEngine {
     } catch (error) {
       throw new Error(`Query failed: ${error instanceof Error ? error.message : String(error)}`);
     }
+  }
+
+  private buildInteractionFilter(filters: DashboardAnalyticsFilters = {}) {
+    const clauses: string[] = ["1 = 1"];
+    const params: SQLInputValue[] = [];
+
+    if (filters.wallet) {
+      clauses.push("LOWER(i.wallet_address) = LOWER(?)");
+      params.push(filters.wallet);
+    }
+
+    if (filters.counterparty) {
+      clauses.push("LOWER(i.counterparty) = LOWER(?)");
+      params.push(filters.counterparty);
+    }
+
+    if (filters.protocol) {
+      clauses.push("LOWER(i.protocol) = LOWER(?)");
+      params.push(filters.protocol);
+    }
+
+    if (filters.startDate) {
+      clauses.push("i.created_at >= ?");
+      params.push(filters.startDate);
+    }
+
+    if (filters.endDate) {
+      clauses.push("i.created_at <= ?");
+      params.push(filters.endDate);
+    }
+
+    return {
+      whereClause: `WHERE ${clauses.join(" AND ")}`,
+      params,
+    };
   }
 
   /**
@@ -52,7 +136,7 @@ export class DuckDBQueryEngine {
       FROM interactions
       WHERE wallet_address IS NOT NULL
       GROUP BY wallet_address
-      ORDER BY count DESC
+      ORDER BY count DESC, wallet_address ASC
       LIMIT ?`,
       [limit]
     );
@@ -69,7 +153,7 @@ export class DuckDBQueryEngine {
       FROM interactions
       WHERE counterparty IS NOT NULL
       GROUP BY counterparty
-      ORDER BY count DESC
+      ORDER BY count DESC, counterparty ASC
       LIMIT ?`,
       [limit]
     );
@@ -89,7 +173,7 @@ export class DuckDBQueryEngine {
       LEFT JOIN settlements s ON i.id = s.interaction_id
       WHERE i.counterparty IS NOT NULL
       GROUP BY i.counterparty
-      ORDER BY total DESC`
+      ORDER BY total DESC, i.counterparty ASC`
     );
   }
 
@@ -104,7 +188,7 @@ export class DuckDBQueryEngine {
       FROM interactions
       WHERE protocol IS NOT NULL
       GROUP BY protocol
-      ORDER BY count DESC`
+      ORDER BY count DESC, protocol ASC`
     );
   }
 
@@ -148,10 +232,10 @@ export class DuckDBQueryEngine {
   ): Array<{ period: string; count: number }> {
     const dateFormat =
       granularity === "hour"
-        ? "datetime(created_at, 'start of hour')"
+        ? "strftime('%Y-%m-%d %H:00:00', created_at)"
         : granularity === "week"
           ? "date(created_at, 'weekday 0', '-6 days')"
-          : "DATE(created_at)";
+          : "date(created_at)";
 
     return this.query<{ period: string; count: number }>(
       `SELECT
@@ -173,7 +257,7 @@ export class DuckDBQueryEngine {
         COUNT(*) as count
       FROM base_transactions
       GROUP BY status
-      ORDER BY count DESC`
+      ORDER BY count DESC, status ASC`
     );
   }
 
@@ -186,8 +270,8 @@ export class DuckDBQueryEngine {
         COALESCE(token_symbol, 'unknown') as token_symbol,
         COUNT(*) as transfer_count
       FROM token_transfers
-      GROUP BY token_symbol
-      ORDER BY transfer_count DESC`
+      GROUP BY COALESCE(token_symbol, 'unknown')
+      ORDER BY transfer_count DESC, token_symbol ASC`
     );
   }
 
@@ -203,7 +287,7 @@ export class DuckDBQueryEngine {
       FROM interactions
       WHERE wallet_address = ?
       GROUP BY day_of_week, hour
-      ORDER BY day_of_week, hour`,
+      ORDER BY day_of_week ASC, hour ASC`,
       [walletAddress]
     );
   }
@@ -269,17 +353,171 @@ export class DuckDBQueryEngine {
         s.tx_hash
       FROM interactions i
       LEFT JOIN settlements s ON i.id = s.interaction_id
-      ORDER BY i.created_at DESC
+      ORDER BY i.created_at DESC, i.id DESC
       LIMIT ?`,
       [limit]
     );
+  }
+
+  getDashboardOverview(
+    filters: DashboardAnalyticsFilters = {},
+    options: DashboardAnalyticsOptions = {},
+  ): DashboardAnalyticsResult {
+    const { whereClause, params } = this.buildInteractionFilter(filters);
+    const topLimit = Math.max(1, options.topLimit ?? 5);
+    const recentLimit = Math.max(1, options.recentLimit ?? 10);
+
+    const [totals] = this.query<{
+      total_interactions: number;
+      unique_wallets: number;
+      unique_counterparties: number;
+      confirmed_settlements: number;
+      settlement_rate: number;
+    }>(
+      `
+      SELECT
+        COUNT(*) AS total_interactions,
+        COUNT(DISTINCT i.wallet_address) AS unique_wallets,
+        COUNT(DISTINCT i.counterparty) AS unique_counterparties,
+        COALESCE(SUM(CASE WHEN s.status = 'confirmed' THEN 1 ELSE 0 END), 0) AS confirmed_settlements,
+        COALESCE(CAST(SUM(CASE WHEN s.status = 'confirmed' THEN 1 ELSE 0 END) AS REAL) / NULLIF(COUNT(s.id), 0), 0) AS settlement_rate
+      FROM interactions i
+      LEFT JOIN settlements s ON i.id = s.interaction_id
+      ${whereClause}
+      `,
+      params,
+    );
+
+    const dailySeries = this.query<{ date: string; count: number }>(
+      `
+      SELECT
+        DATE(i.created_at) AS date,
+        COUNT(*) AS count
+      FROM interactions i
+      ${whereClause}
+      GROUP BY DATE(i.created_at)
+      ORDER BY date ASC
+      `,
+      params,
+    );
+
+    const topWallets = this.query<{ wallet_address: string; count: number }>(
+      `
+      SELECT
+        i.wallet_address,
+        COUNT(*) AS count
+      FROM interactions i
+      ${whereClause}
+      AND i.wallet_address IS NOT NULL
+      GROUP BY i.wallet_address
+      ORDER BY count DESC, i.wallet_address ASC
+      LIMIT ?
+      `,
+      [...params, topLimit],
+    );
+
+    const topCounterparties = this.query<{ counterparty: string; count: number }>(
+      `
+      SELECT
+        i.counterparty,
+        COUNT(*) AS count
+      FROM interactions i
+      ${whereClause}
+      AND i.counterparty IS NOT NULL
+      GROUP BY i.counterparty
+      ORDER BY count DESC, i.counterparty ASC
+      LIMIT ?
+      `,
+      [...params, topLimit],
+    );
+
+    const protocolSeries = this.query<{ protocol: string; count: number }>(
+      `
+      SELECT
+        i.protocol,
+        COUNT(*) AS count
+      FROM interactions i
+      ${whereClause}
+      GROUP BY i.protocol
+      ORDER BY count DESC, i.protocol ASC
+      `,
+      params,
+    );
+
+    const settlementSuccessRateByCounterparty = this.query<{
+      counterparty: string;
+      total: number;
+      confirmed: number;
+      rate: number;
+    }>(
+      `
+      SELECT
+        i.counterparty AS counterparty,
+        COUNT(*) AS total,
+        SUM(CASE WHEN s.status = 'confirmed' THEN 1 ELSE 0 END) AS confirmed,
+        CAST(SUM(CASE WHEN s.status = 'confirmed' THEN 1 ELSE 0 END) AS REAL) / COUNT(*) AS rate
+      FROM interactions i
+      LEFT JOIN settlements s ON i.id = s.interaction_id
+      ${whereClause}
+      AND i.counterparty IS NOT NULL
+      GROUP BY i.counterparty
+      ORDER BY total DESC, i.counterparty ASC
+      `,
+      params,
+    );
+
+    const recentInteractions = this.query<{
+      id: string;
+      created_at: string;
+      wallet_address: string | null;
+      counterparty: string | null;
+      service: string | null;
+      settlement_status: string | null;
+      tx_hash: string | null;
+    }>(
+      `
+      SELECT
+        i.id,
+        i.created_at,
+        i.wallet_address,
+        i.counterparty,
+        i.service,
+        s.status AS settlement_status,
+        s.tx_hash
+      FROM interactions i
+      LEFT JOIN settlements s ON i.id = s.interaction_id
+      ${whereClause}
+      ORDER BY i.created_at DESC, i.id DESC
+      LIMIT ?
+      `,
+      [...params, recentLimit],
+    );
+
+    return {
+      filters,
+      totals: {
+        totalInteractions: Number(totals.total_interactions),
+        uniqueWallets: Number(totals.unique_wallets),
+        uniqueCounterparties: Number(totals.unique_counterparties),
+        confirmedSettlements: Number(totals.confirmed_settlements),
+        settlementRate: Number(totals.settlement_rate),
+      },
+      dailySeries,
+      topWallets,
+      topCounterparties,
+      protocolSeries,
+      settlementSuccessRateByCounterparty,
+      recentInteractions,
+    };
   }
 
   /**
    * Close the database connection
    */
   close() {
-    this.db.close();
+    if (this.ownsConnection && this.db.close) {
+      this.db.close();
+    }
   }
 }
 
@@ -375,13 +613,13 @@ export class FeatureExtractor {
       }
     }
 
-    const maxWalletCount = Math.max(...Array.from(wallets.values()));
+    const maxWalletCount = wallets.size > 0 ? Math.max(...Array.from(wallets.values())) : 0;
 
     return {
       totalInteractions: interactions.length,
       uniqueWallets: wallets.size,
       avgInteractionsPerWallet: wallets.size > 0 ? interactions.length / wallets.size : 0,
-      concentrationRate: interactions.length > 0 ? maxWalletCount / interactions.length : 0,
+      concentrationRate: wallets.size > 0 ? maxWalletCount / interactions.length : 0,
     };
   }
 

@@ -106,6 +106,94 @@ export interface AfiPacketReferences {
   protocol?: { name?: string; category?: string; contract?: string };
 }
 
+export type BehaviorFlagSeverity = "low" | "medium" | "high";
+
+export type BehaviorFlagKey =
+  | "high_counterparty_concentration"
+  | "high_payment_volatility"
+  | "high_settlement_latency"
+  | "high_failure_rate"
+  | "burst_activity"
+  | "new_counterparty_surge"
+  | "thin_evidence"
+  | "control_friction";
+
+export interface BehaviorFlag {
+  key: BehaviorFlagKey;
+  label: string;
+  severity: BehaviorFlagSeverity;
+  value: number;
+  threshold: number;
+  direction: "above" | "below";
+  explanation: string;
+}
+
+export interface BehaviorContribution {
+  key:
+    | "burstiness"
+    | "counterparty_concentration"
+    | "settlement_failure_rate"
+    | "control_friction"
+    | "evidence_density"
+    | "settlement_latency"
+    | "payment_volatility"
+    | "new_counterparty_rate";
+  label: string;
+  value: number;
+  impact: number;
+  explanation: string;
+}
+
+export interface BehaviorFeatureHighlights {
+  txCount7d: number;
+  txCount30d: number;
+  uniqueCounterparties30d: number;
+  topCounterpartyShare30d: number;
+  totalVolumeUsd30d: number;
+  avgPaymentUsd30d: number;
+  paymentSizeCv30d: number;
+  avgLatencySeconds30d: number;
+  settlementFailureRate30d: number;
+  hourlyBurstRatio24h: number;
+  newCounterpartyRate7d: number;
+  evidenceDensity: number;
+  controlFailureRate: number;
+}
+
+export interface BehaviorModelProvenance {
+  source: "afi_heuristic";
+  computedAt: string;
+  observationWindowDays: number;
+  featureSource: "sqlite_runtime";
+  modelVersion: string;
+}
+
+export type BehaviorClusterLabel =
+  | "steady_operator"
+  | "bursty_explorer"
+  | "concentrated_power_user"
+  | "high_value_settler"
+  | "emerging_wallet";
+
+export interface WalletBehaviorModel {
+  wallet: string;
+  anomaly: {
+    score: number;
+    normalizedScore: number;
+    label: "normal" | "elevated" | "anomalous";
+    explanation: string;
+  };
+  cluster: {
+    id: BehaviorClusterLabel;
+    label: BehaviorClusterLabel;
+    explanation: string;
+  };
+  flags: BehaviorFlag[];
+  topSignals: BehaviorContribution[];
+  features: BehaviorFeatureHighlights;
+  provenance: BehaviorModelProvenance;
+}
+
 export type ProtocolCategory = "dex" | "bridge" | "escrow" | "lending" | "staking" | "other";
 export type ProtocolLabelSource = "dune" | "graph" | "defillama";
 

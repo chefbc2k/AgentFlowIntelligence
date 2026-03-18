@@ -1,8 +1,15 @@
-import { ParquetWriter, ParquetSchema } from "parquetjs";
+import { ParquetWriter, ParquetSchema } from "./parquet-lib";
 import { join } from "node:path";
 import { mkdirSync, existsSync } from "node:fs";
 import type { Store } from "./store";
-import type { InteractionRecord, SettlementRecord, BaseTransactionRecord, TokenTransferRecord } from "./types";
+import type {
+  AttestationRecord,
+  EvidenceRecord,
+  InteractionRecord,
+  ReceiptRecord,
+  SettlementRecord,
+  WalletSnapshotRecord,
+} from "./types";
 
 export interface ParquetExportOptions {
   dataDir: string;
@@ -50,9 +57,15 @@ export class ParquetExporter {
   }
 
   private ensurePartitionDir(path: string) {
-    if (!existsSync(path)) {
-      mkdirSync(path, { recursive: true });
-    }
+    mkdirSync(path, { recursive: true });
+  }
+
+  private failedExport(timestamp: string): ExportResult {
+    return {
+      filePath: "",
+      rowCount: 0,
+      timestamp,
+    };
   }
 
   /**
@@ -213,7 +226,7 @@ export class ParquetExporter {
    */
   async exportEvidence(store: Store): Promise<ExportResult> {
     const interactions = store.listInteractions();
-    const allEvidence = [];
+    const allEvidence: EvidenceRecord[] = [];
 
     for (const interaction of interactions) {
       const evidence = store.getEvidence(interaction.id);
@@ -270,7 +283,7 @@ export class ParquetExporter {
    */
   async exportWalletSnapshots(store: Store): Promise<ExportResult> {
     const interactions = store.listInteractions();
-    const snapshots = [];
+    const snapshots: WalletSnapshotRecord[] = [];
 
     for (const interaction of interactions) {
       const snapshot = store.getWalletSnapshot(interaction.id);
@@ -336,9 +349,7 @@ export class ParquetExporter {
    * Export attestations to Parquet
    */
   async exportAttestations(store: Store, wallet?: string): Promise<ExportResult> {
-    const attestations = wallet
-      ? store.listAttestationsByWallet(wallet)
-      : [];
+    const attestations: AttestationRecord[] = wallet ? store.listAttestationsByWallet(wallet) : [];
 
     const timestamp = new Date().toISOString();
 
@@ -395,14 +406,13 @@ export class ParquetExporter {
    * Export receipts to Parquet
    */
   async exportReceipts(store: Store, interactionId?: string): Promise<ExportResult> {
-    const interactions = interactionId ? [store.getInteraction(interactionId)].filter(Boolean) : store.listInteractions();
-    const allReceipts = [];
+    const interaction = interactionId ? store.getInteraction(interactionId) : undefined;
+    const interactions = interaction ? [interaction] : store.listInteractions();
+    const allReceipts: ReceiptRecord[] = [];
 
     for (const interaction of interactions) {
-      if (interaction) {
-        const receipts = store.listReceiptsByInteraction(interaction.id);
-        allReceipts.push(...receipts);
-      }
+      const receipts = store.listReceiptsByInteraction(interaction.id);
+      allReceipts.push(...receipts);
     }
 
     const timestamp = new Date().toISOString();
@@ -574,55 +584,35 @@ export class ParquetExporter {
       results.interactions = await this.exportInteractions(store);
     } catch (error) {
       console.error("Failed to export interactions:", error);
-      results.interactions = {
-        filePath: "",
-        rowCount: 0,
-        timestamp: new Date().toISOString(),
-      };
+      results.interactions = this.failedExport(new Date().toISOString());
     }
 
     try {
       results.settlements = await this.exportSettlements(store);
     } catch (error) {
       console.error("Failed to export settlements:", error);
-      results.settlements = {
-        filePath: "",
-        rowCount: 0,
-        timestamp: new Date().toISOString(),
-      };
+      results.settlements = this.failedExport(new Date().toISOString());
     }
 
     try {
       results.evidence = await this.exportEvidence(store);
     } catch (error) {
       console.error("Failed to export evidence:", error);
-      results.evidence = {
-        filePath: "",
-        rowCount: 0,
-        timestamp: new Date().toISOString(),
-      };
+      results.evidence = this.failedExport(new Date().toISOString());
     }
 
     try {
       results.walletSnapshots = await this.exportWalletSnapshots(store);
     } catch (error) {
       console.error("Failed to export wallet snapshots:", error);
-      results.walletSnapshots = {
-        filePath: "",
-        rowCount: 0,
-        timestamp: new Date().toISOString(),
-      };
+      results.walletSnapshots = this.failedExport(new Date().toISOString());
     }
 
     try {
       results.receipts = await this.exportReceipts(store);
     } catch (error) {
       console.error("Failed to export receipts:", error);
-      results.receipts = {
-        filePath: "",
-        rowCount: 0,
-        timestamp: new Date().toISOString(),
-      };
+      results.receipts = this.failedExport(new Date().toISOString());
     }
 
     const wallets = store.getActiveWallets(365);
@@ -632,6 +622,7 @@ export class ParquetExporter {
         results[`baseTransactions_${wallet}`] = baseTxResult;
       } catch (error) {
         console.error(`Failed to export base transactions for wallet ${wallet}:`, error);
+        results[`baseTransactions_${wallet}`] = this.failedExport(new Date().toISOString());
       }
 
       try {
@@ -639,6 +630,7 @@ export class ParquetExporter {
         results[`tokenTransfers_${wallet}`] = transfersResult;
       } catch (error) {
         console.error(`Failed to export token transfers for wallet ${wallet}:`, error);
+        results[`tokenTransfers_${wallet}`] = this.failedExport(new Date().toISOString());
       }
 
       try {
@@ -646,6 +638,7 @@ export class ParquetExporter {
         results[`attestations_${wallet}`] = attestationsResult;
       } catch (error) {
         console.error(`Failed to export attestations for wallet ${wallet}:`, error);
+        results[`attestations_${wallet}`] = this.failedExport(new Date().toISOString());
       }
     }
 
@@ -673,7 +666,7 @@ export class ParquetExporter {
       }
     }
 
-    const success = errors.length === 0 || Object.values(results).some(r => r.rowCount > 0);
+    const success = errors.length === 0;
 
     console.log(`Bootstrap export completed. Success: ${success}, Errors: ${errors.length}`);
 

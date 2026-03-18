@@ -1,3 +1,4 @@
+import { DatabaseSync } from "node:sqlite";
 import { describe, it, expect, beforeEach } from "vitest";
 import { QueryCache } from "../server/query-cache";
 import type { Store } from "../server/store";
@@ -11,6 +12,7 @@ describe("QueryCache", () => {
     cache = new QueryCache({
       agentMetricsTTL: 1, // 1 second for faster testing
       counterpartyMetricsTTL: 1,
+      walletModelTTL: 1,
       flowAggregateTTL: 1,
       interactionListTTL: 1,
       enablePerformanceMonitoring: true,
@@ -110,7 +112,7 @@ describe("QueryCache", () => {
 
     it("handles case-insensitive wallet addresses", () => {
       cache.getAgentMetrics(mockStore, "0xABC");
-      const result = cache.getAgentMetrics(mockStore, "0xabc");
+      cache.getAgentMetrics(mockStore, "0xabc");
 
       const stats = cache.getStats();
       expect(stats.hits).toBe(1); // Second call should be a hit
@@ -137,6 +139,30 @@ describe("QueryCache", () => {
     it("handles case-insensitive counterparty names", () => {
       cache.getCounterpartyMetrics(mockStore, "Service1");
       cache.getCounterpartyMetrics(mockStore, "service1");
+
+      const stats = cache.getStats();
+      expect(stats.hits).toBe(1);
+    });
+  });
+
+  describe("getWalletBehaviorModel", () => {
+    it("caches wallet behavior model queries", () => {
+      const wallet = "0x123";
+
+      const result1 = cache.getWalletBehaviorModel(mockStore, wallet);
+      const result2 = cache.getWalletBehaviorModel(mockStore, wallet);
+
+      expect(result1.wallet).toBe(wallet);
+      expect(result2).toEqual(result1);
+
+      const stats = cache.getStats();
+      expect(stats.hits).toBe(1);
+      expect(stats.misses).toBe(1);
+    });
+
+    it("handles case-insensitive wallet behavior model keys", () => {
+      cache.getWalletBehaviorModel(mockStore, "0xABC");
+      cache.getWalletBehaviorModel(mockStore, "0xabc");
 
       const stats = cache.getStats();
       expect(stats.hits).toBe(1);
@@ -185,6 +211,21 @@ describe("QueryCache", () => {
       expect(result.protocolSeries.every((p) => p.protocol === "locus")).toBe(true);
     });
 
+    it("filters flow aggregates by start and end date", () => {
+      const result = cache.getFlowAggregates(mockStore, {
+        startDate: "2024-01-02T00:00:00Z",
+        endDate: "2024-01-02T23:59:59Z",
+      });
+
+      expect(result.totalInteractions).toBe(1);
+      expect(result.dailySeries).toEqual([
+        expect.objectContaining({
+          date: "2024-01-02",
+          count: 1,
+        }),
+      ]);
+    });
+
     it("caches different filter combinations separately", () => {
       const result1 = cache.getFlowAggregates(mockStore, { wallet: "0x123" });
       const result2 = cache.getFlowAggregates(mockStore, { counterparty: "service1" });
@@ -193,6 +234,87 @@ describe("QueryCache", () => {
 
       const stats = cache.getStats();
       expect(stats.misses).toBe(2); // Both should be cache misses (different filters)
+    });
+
+    it("aggregates multiple interactions on the same day into one daily bucket", () => {
+      mockStore.listInteractions = () =>
+        [
+          {
+            id: "int-same-day-1",
+            created_at: "2024-01-01T00:00:00Z",
+            protocol: "locus",
+            counterparty: "service1",
+            summary: {},
+          },
+          {
+            id: "int-same-day-2",
+            created_at: "2024-01-01T12:00:00Z",
+            protocol: "x402",
+            counterparty: "service2",
+            summary: {},
+          },
+        ] as unknown as ReturnType<Store["listInteractions"]>;
+
+      const result = cache.getFlowAggregates(mockStore, {});
+
+      expect(result.dailySeries).toEqual([
+        expect.objectContaining({
+          date: "2024-01-01",
+          count: 2,
+        }),
+      ]);
+    });
+  });
+
+  describe("getDashboardAnalytics", () => {
+    it("caches dashboard analytics queries against the shared store database", () => {
+      const db = new DatabaseSync(":memory:");
+      db.exec(`
+        CREATE TABLE interactions (
+          id TEXT PRIMARY KEY,
+          created_at TEXT NOT NULL,
+          agent_id TEXT,
+          wallet_address TEXT,
+          counterparty TEXT,
+          service TEXT,
+          protocol TEXT,
+          summary TEXT NOT NULL
+        );
+        CREATE TABLE settlements (
+          id TEXT PRIMARY KEY,
+          interaction_id TEXT NOT NULL,
+          tx_hash TEXT,
+          chain_id INTEGER,
+          status TEXT NOT NULL,
+          metadata TEXT NOT NULL
+        );
+      `);
+      db.prepare(
+        `INSERT INTO interactions (id, created_at, wallet_address, counterparty, service, protocol, summary)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ).run("dash-1", "2024-01-01T00:00:00Z", "0xabc", "merchant-1", "service-1", "x402", "{}");
+      db.prepare(
+        `INSERT INTO settlements (id, interaction_id, status, metadata)
+         VALUES (?, ?, ?, ?)`,
+      ).run("settlement-1", "dash-1", "confirmed", "{}");
+
+      const dashboardStore = {
+        getDatabase: () => db,
+      } as unknown as Store;
+
+      const result1 = cache.getDashboardAnalytics(dashboardStore, { wallet: "0xABC" }, { topLimit: 1, recentLimit: 1 });
+      const result2 = cache.getDashboardAnalytics(dashboardStore, { wallet: "0xABC" }, { topLimit: 1, recentLimit: 1 });
+
+      expect(result1.totals.totalInteractions).toBe(1);
+      expect(result1.totals.settlementRate).toBe(1);
+      expect(result1.topCounterparties).toEqual([{ counterparty: "merchant-1", count: 1 }]);
+      expect(result2).toEqual(result1);
+
+      const stats = cache.getStats();
+      expect(stats.hits).toBe(1);
+      expect(stats.misses).toBe(1);
+
+      db.close();
     });
   });
 
@@ -235,6 +357,7 @@ describe("QueryCache", () => {
 
       // Prime the cache
       cache.getAgentMetrics(mockStore, wallet);
+      cache.getWalletBehaviorModel(mockStore, wallet);
       expect(cache.getStats().size).toBeGreaterThan(0);
 
       // Invalidate
@@ -243,7 +366,8 @@ describe("QueryCache", () => {
       // Next call should be a cache miss
       cache.resetStats();
       cache.getAgentMetrics(mockStore, wallet);
-      expect(cache.getStats().misses).toBe(1);
+      cache.getWalletBehaviorModel(mockStore, wallet);
+      expect(cache.getStats().misses).toBe(2);
       expect(cache.getStats().hits).toBe(0);
     });
 

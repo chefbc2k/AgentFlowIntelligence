@@ -1,9 +1,10 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DuckDBQueryEngine, FeatureExtractor } from "../server/duckdb-queries";
 import { Store } from "../server/store";
+import type { InteractionRecord, SettlementRecord } from "../server/types";
 
 describe("DuckDBQueryEngine", () => {
   let tmpDir: string;
@@ -17,6 +18,30 @@ describe("DuckDBQueryEngine", () => {
     store = new Store({ dbPath, dataDir: tmpDir });
     engine = new DuckDBQueryEngine(dbPath);
   });
+
+  const upsertInteraction = (
+    overrides: Partial<InteractionRecord> & Pick<InteractionRecord, "id" | "created_at">,
+  ) => {
+    store.upsertInteraction({
+      protocol: "x402",
+      summary: {},
+      ...overrides,
+    });
+  };
+
+  const upsertSettlement = (
+    overrides: Partial<SettlementRecord> &
+      Pick<SettlementRecord, "id" | "interaction_id" | "metadata"> & {
+        status?: SettlementRecord["status"];
+        created_at?: string;
+      },
+  ) => {
+    const { created_at: _createdAt, status = "unknown", ...record } = overrides;
+    store.upsertSettlement({
+      status,
+      ...record,
+    });
+  };
 
   afterEach(() => {
     engine.close();
@@ -36,8 +61,17 @@ describe("DuckDBQueryEngine", () => {
       expect(engine).toBeInstanceOf(DuckDBQueryEngine);
     });
 
+    it("wraps non-error query failures", () => {
+      const prepareSpy = vi.spyOn((engine as unknown as { db: { prepare: (sql: string) => unknown } }).db, "prepare");
+      prepareSpy.mockImplementation(() => {
+        throw "boom";
+      });
+
+      expect(() => engine.query("select 1")).toThrow("Query failed: boom");
+    });
+
     it("executes raw SQL query", () => {
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-1",
         created_at: "2024-01-15T10:00:00Z",
         wallet_address: "0xwallet",
@@ -52,7 +86,7 @@ describe("DuckDBQueryEngine", () => {
     });
 
     it("executes query with parameters", () => {
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-1",
         created_at: "2024-01-15T10:00:00Z",
         wallet_address: "0xwallet",
@@ -79,7 +113,7 @@ describe("DuckDBQueryEngine", () => {
     });
 
     it("counts interactions by date", () => {
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-1",
         created_at: "2024-01-15T10:00:00Z",
         wallet_address: "0xwallet",
@@ -88,7 +122,7 @@ describe("DuckDBQueryEngine", () => {
         summary: {},
       });
 
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-2",
         created_at: "2024-01-15T14:00:00Z",
         wallet_address: "0xwallet",
@@ -97,7 +131,7 @@ describe("DuckDBQueryEngine", () => {
         summary: {},
       });
 
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-3",
         created_at: "2024-01-16T10:00:00Z",
         wallet_address: "0xwallet",
@@ -122,7 +156,7 @@ describe("DuckDBQueryEngine", () => {
     });
 
     it("returns top wallets by interaction count", () => {
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-1",
         created_at: "2024-01-15T10:00:00Z",
         wallet_address: "0xwallet1",
@@ -131,7 +165,7 @@ describe("DuckDBQueryEngine", () => {
         summary: {},
       });
 
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-2",
         created_at: "2024-01-15T11:00:00Z",
         wallet_address: "0xwallet1",
@@ -140,7 +174,7 @@ describe("DuckDBQueryEngine", () => {
         summary: {},
       });
 
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-3",
         created_at: "2024-01-15T12:00:00Z",
         wallet_address: "0xwallet2",
@@ -159,7 +193,7 @@ describe("DuckDBQueryEngine", () => {
 
     it("respects limit parameter", () => {
       for (let i = 0; i < 5; i++) {
-        store.upsertInteraction({
+        upsertInteraction({
           id: `int-${i}`,
           created_at: "2024-01-15T10:00:00Z",
           wallet_address: `0xwallet${i}`,
@@ -174,7 +208,7 @@ describe("DuckDBQueryEngine", () => {
     });
 
     it("excludes null wallet addresses", () => {
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-1",
         created_at: "2024-01-15T10:00:00Z",
         counterparty: "merchant-1",
@@ -194,7 +228,7 @@ describe("DuckDBQueryEngine", () => {
     });
 
     it("returns top counterparties by interaction count", () => {
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-1",
         created_at: "2024-01-15T10:00:00Z",
         wallet_address: "0xwallet",
@@ -203,7 +237,7 @@ describe("DuckDBQueryEngine", () => {
         summary: {},
       });
 
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-2",
         created_at: "2024-01-15T11:00:00Z",
         wallet_address: "0xwallet",
@@ -212,7 +246,7 @@ describe("DuckDBQueryEngine", () => {
         summary: {},
       });
 
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-3",
         created_at: "2024-01-15T12:00:00Z",
         wallet_address: "0xwallet",
@@ -229,7 +263,7 @@ describe("DuckDBQueryEngine", () => {
 
     it("respects limit parameter", () => {
       for (let i = 0; i < 5; i++) {
-        store.upsertInteraction({
+        upsertInteraction({
           id: `int-${i}`,
           created_at: "2024-01-15T10:00:00Z",
           wallet_address: "0xwallet",
@@ -251,7 +285,7 @@ describe("DuckDBQueryEngine", () => {
     });
 
     it("calculates settlement success rate by counterparty", () => {
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-1",
         created_at: "2024-01-15T10:00:00Z",
         wallet_address: "0xwallet",
@@ -260,7 +294,7 @@ describe("DuckDBQueryEngine", () => {
         summary: {},
       });
 
-      store.upsertSettlement({
+      upsertSettlement({
         id: "settlement-1",
         interaction_id: "int-1",
         status: "confirmed",
@@ -268,7 +302,7 @@ describe("DuckDBQueryEngine", () => {
         created_at: "2024-01-15T10:01:00Z",
       });
 
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-2",
         created_at: "2024-01-15T11:00:00Z",
         wallet_address: "0xwallet",
@@ -277,7 +311,7 @@ describe("DuckDBQueryEngine", () => {
         summary: {},
       });
 
-      store.upsertSettlement({
+      upsertSettlement({
         id: "settlement-2",
         interaction_id: "int-2",
         status: "failed",
@@ -301,7 +335,7 @@ describe("DuckDBQueryEngine", () => {
     });
 
     it("counts protocol usage", () => {
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-1",
         created_at: "2024-01-15T10:00:00Z",
         wallet_address: "0xwallet",
@@ -311,7 +345,7 @@ describe("DuckDBQueryEngine", () => {
         summary: {},
       });
 
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-2",
         created_at: "2024-01-15T11:00:00Z",
         wallet_address: "0xwallet",
@@ -321,7 +355,7 @@ describe("DuckDBQueryEngine", () => {
         summary: {},
       });
 
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-3",
         created_at: "2024-01-15T12:00:00Z",
         wallet_address: "0xwallet",
@@ -345,7 +379,7 @@ describe("DuckDBQueryEngine", () => {
     });
 
     it("summarizes wallet activity", () => {
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-1",
         created_at: "2024-01-15T10:00:00Z",
         wallet_address: "0xwallet",
@@ -354,7 +388,7 @@ describe("DuckDBQueryEngine", () => {
         summary: {},
       });
 
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-2",
         created_at: "2024-01-16T10:00:00Z",
         wallet_address: "0xwallet",
@@ -375,7 +409,7 @@ describe("DuckDBQueryEngine", () => {
 
   describe("getInteractionTimeSeries", () => {
     beforeEach(() => {
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-1",
         created_at: "2024-01-15T10:00:00Z",
         wallet_address: "0xwallet",
@@ -384,7 +418,7 @@ describe("DuckDBQueryEngine", () => {
         summary: {},
       });
 
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-2",
         created_at: "2024-01-15T14:00:00Z",
         wallet_address: "0xwallet",
@@ -393,7 +427,7 @@ describe("DuckDBQueryEngine", () => {
         summary: {},
       });
 
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-3",
         created_at: "2024-01-16T10:00:00Z",
         wallet_address: "0xwallet",
@@ -548,7 +582,7 @@ describe("DuckDBQueryEngine", () => {
     });
 
     it("generates interaction heatmap", () => {
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-1",
         created_at: "2024-01-15T10:00:00Z",
         wallet_address: "0xwallet",
@@ -557,7 +591,7 @@ describe("DuckDBQueryEngine", () => {
         summary: {},
       });
 
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-2",
         created_at: "2024-01-15T14:00:00Z",
         wallet_address: "0xwallet",
@@ -581,7 +615,7 @@ describe("DuckDBQueryEngine", () => {
     });
 
     it("calculates repeat rate for counterparties", () => {
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-1",
         created_at: "2024-01-15T10:00:00Z",
         wallet_address: "0xwallet1",
@@ -590,7 +624,7 @@ describe("DuckDBQueryEngine", () => {
         summary: {},
       });
 
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-2",
         created_at: "2024-01-15T11:00:00Z",
         wallet_address: "0xwallet1",
@@ -599,7 +633,7 @@ describe("DuckDBQueryEngine", () => {
         summary: {},
       });
 
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-3",
         created_at: "2024-01-15T12:00:00Z",
         wallet_address: "0xwallet2",
@@ -624,7 +658,7 @@ describe("DuckDBQueryEngine", () => {
     });
 
     it("fetches recent interactions with settlement context", () => {
-      store.upsertInteraction({
+      upsertInteraction({
         id: "int-1",
         created_at: "2024-01-15T10:00:00Z",
         wallet_address: "0xwallet",
@@ -633,7 +667,7 @@ describe("DuckDBQueryEngine", () => {
         summary: {},
       });
 
-      store.upsertSettlement({
+      upsertSettlement({
         id: "settlement-1",
         interaction_id: "int-1",
         tx_hash: "0xtx1",
@@ -651,7 +685,7 @@ describe("DuckDBQueryEngine", () => {
 
     it("respects limit parameter", () => {
       for (let i = 0; i < 100; i++) {
-        store.upsertInteraction({
+        upsertInteraction({
           id: `int-${i}`,
           created_at: `2024-01-15T${String(i % 24).padStart(2, "0")}:00:00Z`,
           wallet_address: "0xwallet",
@@ -663,6 +697,108 @@ describe("DuckDBQueryEngine", () => {
 
       const result = engine.getRecentInteractionsWithContext(25);
       expect(result).toHaveLength(25);
+    });
+  });
+
+  describe("getDashboardOverview", () => {
+    it("builds a dashboard slice from filtered sqlite analytics data", () => {
+      upsertInteraction({
+        id: "int-1",
+        created_at: "2024-01-15T10:00:00Z",
+        wallet_address: "0xWallet1",
+        counterparty: "merchant-1",
+        service: "service-1",
+        protocol: "x402",
+        summary: {},
+      });
+      upsertSettlement({
+        id: "settlement-1",
+        interaction_id: "int-1",
+        status: "confirmed",
+        metadata: {},
+        created_at: "2024-01-15T10:01:00Z",
+      });
+
+      upsertInteraction({
+        id: "int-2",
+        created_at: "2024-01-15T11:00:00Z",
+        wallet_address: "0xWallet1",
+        counterparty: "merchant-1",
+        service: "service-2",
+        protocol: "x402",
+        summary: {},
+      });
+      upsertSettlement({
+        id: "settlement-2",
+        interaction_id: "int-2",
+        status: "failed",
+        metadata: {},
+        created_at: "2024-01-15T11:01:00Z",
+      });
+
+      upsertInteraction({
+        id: "int-3",
+        created_at: "2024-01-16T09:00:00Z",
+        wallet_address: "0xWallet2",
+        counterparty: "merchant-2",
+        service: "service-3",
+        protocol: "locus",
+        summary: {},
+      });
+      upsertSettlement({
+        id: "settlement-3",
+        interaction_id: "int-3",
+        status: "confirmed",
+        metadata: {},
+        created_at: "2024-01-16T09:01:00Z",
+      });
+
+      const result = engine.getDashboardOverview(
+        { wallet: "0xwallet1", protocol: "X402", startDate: "2024-01-15T00:00:00Z", endDate: "2024-01-15T23:59:59Z" },
+        { topLimit: 1, recentLimit: 2 },
+      );
+
+      expect(result.filters.wallet).toBe("0xwallet1");
+      expect(result.totals.totalInteractions).toBe(2);
+      expect(result.totals.uniqueWallets).toBe(1);
+      expect(result.totals.uniqueCounterparties).toBe(1);
+      expect(result.totals.confirmedSettlements).toBe(1);
+      expect(result.totals.settlementRate).toBe(0.5);
+      expect(result.dailySeries).toEqual([
+        expect.objectContaining({ date: "2024-01-15", count: 2 }),
+      ]);
+      expect(result.topWallets).toEqual([
+        expect.objectContaining({ wallet_address: "0xWallet1", count: 2 }),
+      ]);
+      expect(result.topCounterparties).toEqual([
+        expect.objectContaining({ counterparty: "merchant-1", count: 2 }),
+      ]);
+      expect(result.protocolSeries).toEqual([
+        expect.objectContaining({ protocol: "x402", count: 2 }),
+      ]);
+      expect(result.settlementSuccessRateByCounterparty).toEqual([
+        expect.objectContaining({ counterparty: "merchant-1", total: 2, confirmed: 1, rate: 0.5 }),
+      ]);
+      expect(result.recentInteractions).toEqual([
+        expect.objectContaining({ id: "int-2", settlement_status: "failed", tx_hash: null }),
+        expect.objectContaining({ id: "int-1", settlement_status: "confirmed", tx_hash: null }),
+      ]);
+
+      const counterpartyFiltered = engine.getDashboardOverview({ counterparty: "merchant-2" }, { topLimit: 1, recentLimit: 1 });
+      expect(counterpartyFiltered.totals.totalInteractions).toBe(1);
+      expect(counterpartyFiltered.topCounterparties).toEqual([
+        expect.objectContaining({ counterparty: "merchant-2", count: 1 }),
+      ]);
+    });
+
+    it("uses default dashboard limits and safely closes shared connections", () => {
+      const result = engine.getDashboardOverview();
+
+      expect(result.totals.totalInteractions).toBe(0);
+      expect(result.recentInteractions).toEqual([]);
+
+      const sharedEngine = new DuckDBQueryEngine(store.getDatabase());
+      expect(() => sharedEngine.close()).not.toThrow();
     });
   });
 });
@@ -760,6 +896,20 @@ describe("FeatureExtractor", () => {
 
       expect(features.totalInteractions).toBe(2);
       expect(features.daysSinceFirst).toBeLessThan(1);
+      expect(features.avgInteractionsPerDay).toBeCloseTo(12);
+    });
+
+    it("handles interactions without counterparties on the same day", () => {
+      const interactions = [
+        { created_at: "2024-01-15T10:00:00Z", counterparty: null },
+        { created_at: "2024-01-15T10:00:00Z", counterparty: null },
+      ];
+
+      const features = extractor.extractWalletFeatures(interactions);
+
+      expect(features.totalInteractions).toBe(2);
+      expect(features.uniqueCounterparties).toBe(0);
+      expect(features.repeatRate).toBe(0);
       expect(features.avgInteractionsPerDay).toBe(2);
     });
   });
@@ -800,6 +950,20 @@ describe("FeatureExtractor", () => {
 
       expect(features.totalInteractions).toBe(2);
       expect(features.uniqueWallets).toBe(1);
+    });
+
+    it("handles interactions without any wallet addresses", () => {
+      const interactions = [
+        { wallet_address: null, created_at: "2024-01-15T10:00:00Z" },
+        { wallet_address: null, created_at: "2024-01-15T14:00:00Z" },
+      ];
+
+      const features = extractor.extractCounterpartyFeatures(interactions);
+
+      expect(features.totalInteractions).toBe(2);
+      expect(features.uniqueWallets).toBe(0);
+      expect(features.avgInteractionsPerWallet).toBe(0);
+      expect(features.concentrationRate).toBe(0);
     });
   });
 

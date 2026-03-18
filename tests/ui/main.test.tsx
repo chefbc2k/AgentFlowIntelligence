@@ -1,21 +1,28 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-describe("main entry", () => {
-  it("mounts the app into #root", async () => {
-    vi.resetModules();
+const renderMock = vi.fn();
+const createRootMock = vi.fn(() => ({ render: renderMock }));
+
+vi.mock("react-dom/client", () => ({
+  createRoot: createRootMock,
+}));
+
+describe("UI entrypoint", () => {
+  beforeEach(() => {
     document.body.innerHTML = '<div id="root"></div>';
+    renderMock.mockClear();
+    createRootMock.mockClear();
+    vi.resetModules();
+  });
 
-    const renderSpy = vi.fn();
-    const createRootSpy = vi.fn(() => ({ render: renderSpy }));
+  afterEach(() => {
+    document.body.innerHTML = "";
+  });
 
-    vi.doMock("react-dom/client", () => ({ createRoot: createRootSpy }));
-    vi.doMock("../../src/app", () => ({ App: () => null }));
-    vi.doMock("../../src/styles.css", () => ({}));
-
+  it("mounts the app into the root element", async () => {
     await import("../../src/main");
 
-    expect(createRootSpy).toHaveBeenCalledWith(document.getElementById("root"));
-    expect(renderSpy).toHaveBeenCalledTimes(1);
+    expect(createRootMock).toHaveBeenCalledWith(document.getElementById("root"));
+    expect(renderMock).toHaveBeenCalledTimes(1);
   });
 });
-

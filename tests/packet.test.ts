@@ -148,6 +148,34 @@ describe("portable interaction packets", () => {
     expect(packet.summary.evidenceKinds).toEqual(["peac", "x402"]);
   });
 
+  it("preserves evidence sections after JSON serialization", () => {
+    const store = createTestStore();
+    const interaction = makeInteraction({ id: "packet-json" });
+    store.upsertInteraction(interaction);
+    store.upsertEvidence([
+      { id: "packet-json:x402", interaction_id: interaction.id, kind: "x402", payload: { ok: true }, created_at: "2024-01-01T00:00:00Z" },
+    ]);
+    store.upsertReceipts([
+      {
+        id: "packet-json:receipt",
+        interaction_id: interaction.id,
+        tx_hash: "0xtx",
+        raw: { status: "verified", raw: { receipt: "ok" } },
+        created_at: "2024-01-01T00:00:00Z",
+      },
+    ]);
+
+    const packet = JSON.parse(JSON.stringify(buildPortableInteractionPacket(store, interaction)));
+
+    expect(packet.evidence).toEqual(
+      expect.objectContaining({
+        timeline: [expect.objectContaining({ id: "packet-json:x402", kind: "x402" })],
+        receipts: [expect.objectContaining({ id: "packet-json:receipt", status: "verified" })],
+        attestations: [],
+      }),
+    );
+  });
+
   it("marks missing x402 and empty controls when optional data is absent", () => {
     const store = createTestStore();
     const interaction = makeInteraction({

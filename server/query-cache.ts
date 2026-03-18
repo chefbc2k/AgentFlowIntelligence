@@ -4,6 +4,13 @@
  */
 
 import { Cache } from "./cache";
+import {
+  DuckDBQueryEngine,
+  type DashboardAnalyticsFilters,
+  type DashboardAnalyticsOptions,
+  type DashboardAnalyticsResult,
+} from "./duckdb-queries";
+import { computeWalletBehaviorModel } from "./models";
 import type { Store } from "./store";
 import { computeAgentMetrics, computeCounterpartyMetrics } from "./metrics";
 import type { InteractionRecord } from "./types";
@@ -13,8 +20,12 @@ export interface QueryCacheConfig {
   agentMetricsTTL?: number;
   /** TTL in seconds for counterparty metrics queries (default: 300 = 5 minutes) */
   counterpartyMetricsTTL?: number;
+  /** TTL in seconds for wallet behavior model queries (default: 300 = 5 minutes) */
+  walletModelTTL?: number;
   /** TTL in seconds for flow aggregate queries (default: 180 = 3 minutes) */
   flowAggregateTTL?: number;
+  /** TTL in seconds for dashboard analytics queries (default: 180 = 3 minutes) */
+  dashboardAnalyticsTTL?: number;
   /** TTL in seconds for interaction list queries (default: 60 = 1 minute) */
   interactionListTTL?: number;
   /** Enable performance monitoring and logging */
@@ -51,7 +62,9 @@ export class QueryCache {
     this.config = {
       agentMetricsTTL: config.agentMetricsTTL ?? 300,
       counterpartyMetricsTTL: config.counterpartyMetricsTTL ?? 300,
+      walletModelTTL: config.walletModelTTL ?? 300,
       flowAggregateTTL: config.flowAggregateTTL ?? 180,
+      dashboardAnalyticsTTL: config.dashboardAnalyticsTTL ?? 180,
       interactionListTTL: config.interactionListTTL ?? 60,
       enablePerformanceMonitoring: config.enablePerformanceMonitoring ?? false,
     };
@@ -102,6 +115,28 @@ export class QueryCache {
   }
 
   /**
+   * Get wallet behavior model with caching
+   */
+  getWalletBehaviorModel(store: Store, wallet: string): ReturnType<typeof computeWalletBehaviorModel> {
+    const key = `wallet_model:${wallet.toLowerCase()}`;
+    const startTime = performance.now();
+
+    const cached = this.cache.get<ReturnType<typeof computeWalletBehaviorModel>>(key);
+    if (cached) {
+      this.hits++;
+      this.logPerformance("wallet_model", true, performance.now() - startTime);
+      return cached;
+    }
+
+    this.misses++;
+    const result = computeWalletBehaviorModel(store, wallet);
+    this.cache.set(key, result, this.config.walletModelTTL);
+    this.logPerformance("wallet_model", false, performance.now() - startTime);
+
+    return result;
+  }
+
+  /**
    * Get flow aggregates with caching
    * Aggregates interactions by time period, protocol, and counterparty
    */
@@ -129,6 +164,33 @@ export class QueryCache {
     const result = this.computeFlowAggregates(store, filters);
     this.cache.set(key, result, this.config.flowAggregateTTL);
     this.logPerformance("flow_aggregates", false, performance.now() - startTime);
+
+    return result;
+  }
+
+  /**
+   * Get dashboard analytics with caching
+   */
+  getDashboardAnalytics(
+    store: Store,
+    filters: DashboardAnalyticsFilters = {},
+    options: DashboardAnalyticsOptions = {},
+  ): DashboardAnalyticsResult {
+    const key = `dashboard_analytics:${JSON.stringify({ filters, options })}`;
+    const startTime = performance.now();
+
+    const cached = this.cache.get<DashboardAnalyticsResult>(key);
+    if (cached) {
+      this.hits++;
+      this.logPerformance("dashboard_analytics", true, performance.now() - startTime);
+      return cached;
+    }
+
+    this.misses++;
+    const analyticsEngine = new DuckDBQueryEngine(store.getDatabase());
+    const result = analyticsEngine.getDashboardOverview(filters, options);
+    this.cache.set(key, result, this.config.dashboardAnalyticsTTL);
+    this.logPerformance("dashboard_analytics", false, performance.now() - startTime);
 
     return result;
   }
@@ -174,6 +236,7 @@ export class QueryCache {
     // Invalidate specific wallets
     for (const wallet of affectedWallets) {
       this.cache.clear(`agent_metrics:${wallet.toLowerCase()}`);
+      this.cache.clear(`wallet_model:${wallet.toLowerCase()}`);
     }
 
     // Invalidate specific counterparties
@@ -183,6 +246,7 @@ export class QueryCache {
 
     // Clear all flow aggregates and interaction lists as they may be affected
     this.cache.clear("flow_aggregates:");
+    this.cache.clear("dashboard_analytics:");
     this.cache.clear("interactions_list:");
   }
 
@@ -278,12 +342,14 @@ export class QueryCache {
       interactions = interactions.filter((i) => i.protocol === filters.protocol);
     }
 
-    if (filters.startDate) {
-      interactions = interactions.filter((i) => i.created_at >= filters.startDate);
+    const { startDate, endDate } = filters;
+
+    if (startDate) {
+      interactions = interactions.filter((i) => i.created_at >= startDate);
     }
 
-    if (filters.endDate) {
-      interactions = interactions.filter((i) => i.created_at <= filters.endDate);
+    if (endDate) {
+      interactions = interactions.filter((i) => i.created_at <= endDate);
     }
 
     // Aggregate by time period (daily)

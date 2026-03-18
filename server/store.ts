@@ -69,12 +69,10 @@ export class Store {
 
     this.exportToParquetAsync(
       async () => {
-        if (this.parquetExporter) {
-          await this.parquetExporter.exportInteractions(this, {
-            startDate: record.created_at.slice(0, 10),
-            endDate: record.created_at.slice(0, 10),
-          });
-        }
+        await this.parquetExporter!.exportInteractions(this, {
+          startDate: record.created_at.slice(0, 10),
+          endDate: record.created_at.slice(0, 10),
+        });
       },
       "upsertInteraction",
     );
@@ -563,6 +561,10 @@ export class Store {
 
   getParquetExporter(): ParquetExporter | undefined {
     return this.parquetExporter;
+  }
+
+  getDatabase() {
+    return this.db;
   }
 
   async bootstrapParquetExport(): Promise<{

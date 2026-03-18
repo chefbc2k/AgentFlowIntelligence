@@ -56,6 +56,7 @@ Base enrichment uses Etherscan v2 when a key is present and falls back to Blocks
 - `POST /api/peac/receipt` — PEAC receipt ingestion
 - `GET /api/metrics/agent/:wallet` — agent metrics
 - `GET /api/metrics/counterparty/:id` — counterparty metrics
+- `GET /api/models/wallet/:wallet` — deterministic wallet behavior model (anomaly score, cluster, flags)
 
 ## Demo Flow
 
