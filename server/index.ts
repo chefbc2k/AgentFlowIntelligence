@@ -161,6 +161,7 @@ export function createApi({ config, store, queryCache }: { config: AppConfig; st
   const cache = queryCache ?? new QueryCache({
     agentMetricsTTL: 300,
     counterpartyMetricsTTL: 300,
+    walletModelTTL: 300,
     flowAggregateTTL: 180,
     interactionListTTL: 60,
     enablePerformanceMonitoring: false,
@@ -687,6 +688,7 @@ export function createApi({ config, store, queryCache }: { config: AppConfig; st
     },
     agentMetrics: (wallet: string) => ok(cache.getAgentMetrics(store, wallet)),
     counterpartyMetrics: (id: string) => ok(cache.getCounterpartyMetrics(store, id)),
+    walletBehaviorModel: (wallet: string) => ok(cache.getWalletBehaviorModel(store, wallet)),
     flowAggregates: (filters: {
       wallet?: string;
       counterparty?: string;
@@ -763,6 +765,8 @@ export function createRouteHandlers(api: ReturnType<typeof createApi>) {
       send(res, api.agentMetrics(String(req.params.wallet))),
     counterpartyMetrics: (req: { params: { id: string | string[] } }, res: JsonResponder) =>
       send(res, api.counterpartyMetrics(String(req.params.id))),
+    walletBehaviorModel: (req: { params: { wallet: string | string[] } }, res: JsonResponder) =>
+      send(res, api.walletBehaviorModel(String(req.params.wallet))),
     flowAggregates: (
       req: { query: { wallet?: string | string[]; counterparty?: string | string[]; protocol?: string | string[]; startDate?: string | string[]; endDate?: string | string[] } },
       res: JsonResponder,
@@ -822,6 +826,7 @@ export function createApp(options: CreateAppOptions = {}) {
   const queryCache = options.queryCache ?? new QueryCache({
     agentMetricsTTL: 300,
     counterpartyMetricsTTL: 300,
+    walletModelTTL: 300,
     flowAggregateTTL: 180,
     interactionListTTL: 60,
     enablePerformanceMonitoring: false,
@@ -897,6 +902,7 @@ export function createApp(options: CreateAppOptions = {}) {
   app.post("/api/peac/receipt", handlers.peacReceipt as never);
   app.get("/api/metrics/agent/:wallet", handlers.agentMetrics as never);
   app.get("/api/metrics/counterparty/:id", handlers.counterpartyMetrics as never);
+  app.get("/api/models/wallet/:wallet", handlers.walletBehaviorModel as never);
   app.get("/api/metrics/flow-aggregates", handlers.flowAggregates as never);
   app.get("/api/metrics/dashboard", handlers.dashboardAnalytics as never);
   app.get("/api/cache/stats", handlers.cacheStats as never);

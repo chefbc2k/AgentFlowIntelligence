@@ -8,6 +8,8 @@ import {
   buildTopSeries,
   filterInteractionsByFlow,
   findInteractionForFlow,
+  formatBehaviorCluster,
+  formatBehaviorLabel,
   formatAmount,
   formatControlStatus,
   formatHttpStatus,
@@ -103,6 +105,66 @@ function makePacket(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function makeBehaviorModel(overrides: Record<string, unknown> = {}) {
+  return {
+    wallet: "0xwallet",
+    anomaly: {
+      score: 62.5,
+      normalizedScore: 0.625,
+      label: "elevated" as const,
+      explanation: "Primary drivers: burstiness, settlement failure rate, control friction.",
+    },
+    cluster: {
+      id: "bursty_explorer",
+      label: "bursty_explorer" as const,
+      explanation: "Recent activity arrives in bursts and expands into new counterparties.",
+    },
+    flags: [
+      {
+        key: "burst_activity",
+        label: "Burst activity",
+        severity: "high" as const,
+        value: 3.2,
+        threshold: 2,
+        direction: "above" as const,
+        explanation: "Hourly burst ratio is 3.2.",
+      },
+    ],
+    topSignals: [
+      {
+        key: "burstiness",
+        label: "Burstiness",
+        value: 1.8,
+        impact: 0.3,
+        explanation: "Daily activity burstiness is 1.8.",
+      },
+    ],
+    features: {
+      txCount7d: 3,
+      txCount30d: 3,
+      uniqueCounterparties30d: 2,
+      topCounterpartyShare30d: 0.67,
+      totalVolumeUsd30d: 120,
+      avgPaymentUsd30d: 40,
+      paymentSizeCv30d: 1.2,
+      avgLatencySeconds30d: 120,
+      settlementFailureRate30d: 0.5,
+      hourlyBurstRatio24h: 3.2,
+      newCounterpartyRate7d: 0.5,
+      evidenceDensity: 1.2,
+      controlFailureRate: 0.5,
+    },
+    provenance: {
+      source: "afi_heuristic" as const,
+      computedAt: "2024-01-01T00:00:00Z",
+      observationWindowDays: 30,
+      featureSource: "sqlite_runtime" as const,
+      modelVersion: "afi-heuristic/v1",
+    },
+    ...overrides,
+  };
+}
+
 describe("AFI UI", () => {
   const fetchMock = global.fetch as unknown as ReturnType<typeof vi.fn>;
 
@@ -117,6 +179,13 @@ describe("AFI UI", () => {
 
   beforeEach(() => {
     fetchMock.mockReset();
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/models/wallet/")) {
+        return Promise.resolve(jsonResponse(makeBehaviorModel()));
+      }
+      return Promise.reject(new Error(`Unexpected fetch: ${url}`));
+    });
   });
 
   afterEach(() => {
@@ -130,6 +199,8 @@ describe("AFI UI", () => {
   });
 
   it("covers packet and flow helper branches directly", () => {
+    expect(formatBehaviorLabel("anomalous")).toBe("anomalous");
+    expect(formatBehaviorCluster("steady_operator")).toBe("steady operator");
     const basePacket = makePacket();
     expect(formatAmount(basePacket)).toBe("1 USDC");
     expect(formatAmount(makePacket({ interaction: { id: "usd", created_at: "2024-01-01T00:00:00Z", protocol: "x402", amountUSD: 2.5 } }))).toBe(
@@ -397,6 +468,34 @@ describe("AFI UI", () => {
     expect(within(latestActivity).getByText("EscrowX")).toBeInTheDocument();
   });
 
+  it("falls back to interaction-derived dashboard views when analytics payload is invalid", async () => {
+    const interactions = [
+      {
+        id: "i-invalid-dashboard",
+        created_at: "2024-01-04T14:00:00Z",
+        wallet_address: "w4",
+        counterparty: "svc-invalid",
+        service: "/score",
+        protocol: "x402",
+        protocolName: "ScoreX",
+      },
+    ];
+
+    fetchMock.mockResolvedValueOnce(jsonResponse(interactions));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ invalid: true }));
+
+    render(<App />);
+
+    const activityChart = await screen.findByLabelText("Activity by day");
+    expect(within(activityChart).getByText("2024-01-04")).toBeInTheDocument();
+
+    const protocolChart = screen.getByLabelText("Protocol mix");
+    expect(within(protocolChart).getByText("ScoreX")).toBeInTheDocument();
+
+    const latestActivity = screen.getByText("Latest activity").closest<HTMLElement>(".afi-kpi")!;
+    expect(within(latestActivity).getByText("svc-invalid")).toBeInTheDocument();
+  });
+
   it("renders unknown dashboard labels when analytics rows omit labels", async () => {
     const dashboard = {
       totals: {
@@ -525,9 +624,12 @@ describe("AFI UI", () => {
 
     fetchMock.mockResolvedValueOnce(jsonResponse(interactions));
     fetchMock.mockResolvedValueOnce(jsonResponse(agentMetrics));
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeBehaviorModel()));
     fetchMock.mockResolvedValueOnce(jsonResponse(makePacket({ interaction: { ...interactions[0], amountUSD: 1 } })));
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeBehaviorModel()));
     fetchMock.mockResolvedValueOnce(jsonResponse(counterpartyMetrics));
     fetchMock.mockResolvedValueOnce(jsonResponse(makePacket({ interaction: { ...interactions[0], amountUSD: 1 } })));
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeBehaviorModel()));
 
     render(<App loadDashboard={false} />);
 
@@ -617,6 +719,7 @@ describe("AFI UI", () => {
     };
 
     fetchMock.mockResolvedValueOnce(jsonResponse(agentMetrics));
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeBehaviorModel()));
     fetchMock.mockResolvedValueOnce(jsonResponse(counterpartyMetrics));
 
     fireEvent.change(within(agentSection).getByPlaceholderText("Wallet address (Base)"), {
@@ -930,6 +1033,85 @@ describe("AFI UI", () => {
     expect(await screen.findByText(/Enter a wallet/i)).toBeInTheDocument();
 
     unmount();
+  });
+
+  it("renders behavior model fallbacks when the wallet model endpoint fails or returns an invalid payload", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse([]));
+
+    render(<App loadDashboard={false} />);
+
+    const agentSection = screen.getByRole("heading", { name: "Agent Profile" }).closest("section")!;
+
+    fetchMock.mockResolvedValueOnce(jsonResponse({
+      wallet: "0xwallet",
+      lifecycle: { firstSeen: "2024-01-01T00:00:00Z", lastSeen: "2024-01-01T00:00:00Z", ageDays: 0 },
+      throughput: { totalInteractions: 1, dailyCounts: [1], burstiness: 0 },
+      counterparty: { unique: 1, top: null, repeatRate: 0 },
+      paymentBehavior: { count: 1, avg: 1, min: 1, max: 1, median: 1 },
+      paymentBehaviorUSD: { count: 1, avg: 1, min: 1, max: 1, median: 1, totalVolumeUSD: 1 },
+      protocolActivity: { uniqueProtocols: 1, topProtocol: null, categoryBreakdown: {}, escrowCompletionRate: null, stakingMetrics: null },
+      settlement: { total: 1, successRate: 1 },
+      settlementLatency: emptyLatency,
+      controls: emptyControls,
+      receiptAvailability: { total: 1, withReceipt: 1, rate: 1 },
+      evidenceDensity: 1,
+      onchain: undefined,
+    }));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ invalid: true }));
+
+    fireEvent.change(within(agentSection).getByPlaceholderText("Wallet address (Base)"), {
+      target: { value: "0xwallet" },
+    });
+    within(agentSection).getByRole("button", { name: "Load" }).click();
+
+    expect(await screen.findByText("Behavior model unavailable")).toBeInTheDocument();
+
+    fetchMock.mockResolvedValueOnce(jsonResponse({
+      wallet: "0xwallet",
+      lifecycle: { firstSeen: "2024-01-01T00:00:00Z", lastSeen: "2024-01-01T00:00:00Z", ageDays: 0 },
+      throughput: { totalInteractions: 1, dailyCounts: [1], burstiness: 0 },
+      counterparty: { unique: 1, top: null, repeatRate: 0 },
+      paymentBehavior: { count: 1, avg: 1, min: 1, max: 1, median: 1 },
+      paymentBehaviorUSD: { count: 1, avg: 1, min: 1, max: 1, median: 1, totalVolumeUSD: 1 },
+      protocolActivity: { uniqueProtocols: 1, topProtocol: null, categoryBreakdown: {}, escrowCompletionRate: null, stakingMetrics: null },
+      settlement: { total: 1, successRate: 1 },
+      settlementLatency: emptyLatency,
+      controls: emptyControls,
+      receiptAvailability: { total: 1, withReceipt: 1, rate: 1 },
+      evidenceDensity: 1,
+      onchain: undefined,
+    }));
+    fetchMock.mockRejectedValueOnce(new Error("wallet-model"));
+
+    within(agentSection).getByRole("button", { name: "Load" }).click();
+    expect(await screen.findByText("Behavior model unavailable")).toBeInTheDocument();
+  });
+
+  it("renders the default and empty behavior-model states while ignoring invalid agent metrics payloads", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse([]));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ invalid: true }));
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        makeBehaviorModel({
+          flags: [],
+          topSignals: [],
+        }),
+      ),
+    );
+
+    render(<App loadDashboard={false} />);
+
+    expect(screen.getByText("Load a wallet to score anomaly, cluster, and behavior flags.")).toBeInTheDocument();
+
+    const agentSection = screen.getByRole("heading", { name: "Agent Profile" }).closest("section")!;
+    fireEvent.change(within(agentSection).getByPlaceholderText("Wallet address (Base)"), {
+      target: { value: "0xwallet" },
+    });
+    within(agentSection).getByRole("button", { name: "Load" }).click();
+
+    expect(await screen.findByText("No elevated behavior flags.")).toBeInTheDocument();
+    expect(screen.getByText("No dominant behavior drivers.")).toBeInTheDocument();
+    expect(screen.getByText("bursty explorer")).toBeInTheDocument();
   });
 
   it("covers interaction/detail fetch failures and packet status fallbacks", async () => {

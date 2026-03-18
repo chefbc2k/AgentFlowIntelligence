@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import type { WalletBehaviorModel } from "../server/types";
 
 type InteractionRow = {
   id: string;
@@ -224,6 +225,27 @@ function isDashboardAnalytics(value: unknown): value is DashboardAnalytics {
   return isRecord(value) && isRecord(value.totals) && Array.isArray(value.dailySeries) && Array.isArray(value.recentInteractions);
 }
 
+function isAgentMetrics(value: unknown): value is AgentMetrics {
+  return isRecord(value) && typeof value.wallet === "string" && isRecord(value.lifecycle) && isRecord(value.throughput);
+}
+
+function isCounterpartyMetrics(value: unknown): value is CounterpartyMetrics {
+  return isRecord(value) && typeof value.counterparty === "string" && isRecord(value.volume) && isRecord(value.fulfillment);
+}
+
+function isWalletBehaviorModel(value: unknown): value is WalletBehaviorModel {
+  return (
+    isRecord(value) &&
+    typeof value.wallet === "string" &&
+    isRecord(value.anomaly) &&
+    isRecord(value.cluster) &&
+    Array.isArray(value.flags) &&
+    Array.isArray(value.topSignals) &&
+    isRecord(value.features) &&
+    isRecord(value.provenance)
+  );
+}
+
 export function formatAmount(detail: InteractionDetail) {
   if (detail.interaction.amountUSD !== null && detail.interaction.amountUSD !== undefined) {
     return `${detail.interaction.amountUSD.toFixed(2)} USD`;
@@ -318,6 +340,14 @@ function formatPercent(value: number) {
   return `${Math.round(value * 100)}%`;
 }
 
+export function formatBehaviorLabel(label: WalletBehaviorModel["anomaly"]["label"]) {
+  return label.replace(/_/g, " ");
+}
+
+export function formatBehaviorCluster(label: WalletBehaviorModel["cluster"]["label"]) {
+  return label.replace(/_/g, " ");
+}
+
 function formatCompactNumber(value: number) {
   return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(value);
 }
@@ -405,6 +435,8 @@ export function App({ loadDashboard = true }: { loadDashboard?: boolean }) {
   const [wallet, setWallet] = useState("");
   const [counterparty, setCounterparty] = useState("");
   const [agentMetrics, setAgentMetrics] = useState<AgentMetrics | null>(null);
+  const [behaviorModel, setBehaviorModel] = useState<WalletBehaviorModel | null>(null);
+  const [behaviorModelMessage, setBehaviorModelMessage] = useState<string | null>(null);
   const [counterpartyMetrics, setCounterpartyMetrics] = useState<CounterpartyMetrics | null>(null);
   const [refreshingProtocol, setRefreshingProtocol] = useState(false);
   const [protocolRefreshMessage, setProtocolRefreshMessage] = useState<string | null>(null);
@@ -458,14 +490,33 @@ export function App({ loadDashboard = true }: { loadDashboard?: boolean }) {
   const loadAgentMetricsFor = (walletAddress: string) => {
     fetch(`/api/metrics/agent/${walletAddress}`)
       .then((res) => res.json())
-      .then(setAgentMetrics)
+      .then((payload: unknown) => setAgentMetrics(isAgentMetrics(payload) ? payload : null))
       .catch(() => setAgentMetrics(null));
+    loadBehaviorModelFor(walletAddress);
+  };
+
+  const loadBehaviorModelFor = (walletAddress: string) => {
+    fetch(`/api/models/wallet/${walletAddress}`)
+      .then((res) => res.json())
+      .then((payload: unknown) => {
+        if (!isWalletBehaviorModel(payload)) {
+          setBehaviorModel(null);
+          setBehaviorModelMessage("Behavior model unavailable");
+          return;
+        }
+        setBehaviorModel(payload);
+        setBehaviorModelMessage(null);
+      })
+      .catch(() => {
+        setBehaviorModel(null);
+        setBehaviorModelMessage("Behavior model unavailable");
+      });
   };
 
   const loadCounterpartyMetricsFor = (counterpartyId: string) => {
     fetch(`/api/metrics/counterparty/${counterpartyId}`)
       .then((res) => res.json())
-      .then(setCounterpartyMetrics)
+      .then((payload: unknown) => setCounterpartyMetrics(isCounterpartyMetrics(payload) ? payload : null))
       .catch(() => setCounterpartyMetrics(null));
   };
 
@@ -757,6 +808,68 @@ export function App({ loadDashboard = true }: { loadDashboard?: boolean }) {
                 <strong>{(counterpartyMetrics.receiptAvailability.rate * 100).toFixed(0)}%</strong>
               </div>
             </div>
+          )}
+        </section>
+
+        <section className="afi-panel">
+          <h2>Behavior Model</h2>
+          {!behaviorModel && <p className="afi-muted">{behaviorModelMessage ?? "Load a wallet to score anomaly, cluster, and behavior flags."}</p>}
+          {behaviorModel && (
+            <>
+              <div className="afi-metrics">
+                <div>
+                  <span>Wallet</span>
+                  <strong>{behaviorModel.wallet}</strong>
+                </div>
+                <div>
+                  <span>Anomaly score</span>
+                  <strong>{behaviorModel.anomaly.score.toFixed(2)}</strong>
+                </div>
+                <div>
+                  <span>Risk band</span>
+                  <strong>{formatBehaviorLabel(behaviorModel.anomaly.label)}</strong>
+                </div>
+                <div>
+                  <span>Cluster</span>
+                  <strong>{formatBehaviorCluster(behaviorModel.cluster.label)}</strong>
+                </div>
+                <div>
+                  <span>Computed</span>
+                  <strong>{new Date(behaviorModel.provenance.computedAt).toLocaleString()}</strong>
+                </div>
+                <div>
+                  <span>Model</span>
+                  <strong>{behaviorModel.provenance.modelVersion}</strong>
+                </div>
+              </div>
+              <p className="afi-muted">{behaviorModel.anomaly.explanation}</p>
+              <p className="afi-muted">{behaviorModel.cluster.explanation}</p>
+
+              <div className="afi-subpanel">
+                <h4>Behavior flags</h4>
+                <div className="afi-chip-row">
+                  {behaviorModel.flags.length === 0 && <p className="afi-muted">No elevated behavior flags.</p>}
+                  {behaviorModel.flags.map((flag) => (
+                    <span key={flag.key} className={`afi-chip afi-chip-${flag.severity}`}>
+                      {flag.label}
+                    </span>
+                  ))}
+                </div>
+              </div>
+
+              <div className="afi-subpanel">
+                <h4>Top drivers</h4>
+                <div className="afi-metrics">
+                  {behaviorModel.topSignals.length === 0 && <p className="afi-muted">No dominant behavior drivers.</p>}
+                  {behaviorModel.topSignals.map((contributor) => (
+                    <div key={contributor.key}>
+                      <span>{contributor.label}</span>
+                      <strong>{contributor.value.toFixed(2)}</strong>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </>
           )}
         </section>
 

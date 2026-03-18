@@ -10,6 +10,7 @@ import {
   type DashboardAnalyticsOptions,
   type DashboardAnalyticsResult,
 } from "./duckdb-queries";
+import { computeWalletBehaviorModel } from "./models";
 import type { Store } from "./store";
 import { computeAgentMetrics, computeCounterpartyMetrics } from "./metrics";
 import type { InteractionRecord } from "./types";
@@ -19,6 +20,8 @@ export interface QueryCacheConfig {
   agentMetricsTTL?: number;
   /** TTL in seconds for counterparty metrics queries (default: 300 = 5 minutes) */
   counterpartyMetricsTTL?: number;
+  /** TTL in seconds for wallet behavior model queries (default: 300 = 5 minutes) */
+  walletModelTTL?: number;
   /** TTL in seconds for flow aggregate queries (default: 180 = 3 minutes) */
   flowAggregateTTL?: number;
   /** TTL in seconds for dashboard analytics queries (default: 180 = 3 minutes) */
@@ -59,6 +62,7 @@ export class QueryCache {
     this.config = {
       agentMetricsTTL: config.agentMetricsTTL ?? 300,
       counterpartyMetricsTTL: config.counterpartyMetricsTTL ?? 300,
+      walletModelTTL: config.walletModelTTL ?? 300,
       flowAggregateTTL: config.flowAggregateTTL ?? 180,
       dashboardAnalyticsTTL: config.dashboardAnalyticsTTL ?? 180,
       interactionListTTL: config.interactionListTTL ?? 60,
@@ -106,6 +110,28 @@ export class QueryCache {
     const result = computeCounterpartyMetrics(store, counterparty);
     this.cache.set(key, result, this.config.counterpartyMetricsTTL);
     this.logPerformance("counterparty_metrics", false, performance.now() - startTime);
+
+    return result;
+  }
+
+  /**
+   * Get wallet behavior model with caching
+   */
+  getWalletBehaviorModel(store: Store, wallet: string): ReturnType<typeof computeWalletBehaviorModel> {
+    const key = `wallet_model:${wallet.toLowerCase()}`;
+    const startTime = performance.now();
+
+    const cached = this.cache.get<ReturnType<typeof computeWalletBehaviorModel>>(key);
+    if (cached) {
+      this.hits++;
+      this.logPerformance("wallet_model", true, performance.now() - startTime);
+      return cached;
+    }
+
+    this.misses++;
+    const result = computeWalletBehaviorModel(store, wallet);
+    this.cache.set(key, result, this.config.walletModelTTL);
+    this.logPerformance("wallet_model", false, performance.now() - startTime);
 
     return result;
   }
@@ -210,6 +236,7 @@ export class QueryCache {
     // Invalidate specific wallets
     for (const wallet of affectedWallets) {
       this.cache.clear(`agent_metrics:${wallet.toLowerCase()}`);
+      this.cache.clear(`wallet_model:${wallet.toLowerCase()}`);
     }
 
     // Invalidate specific counterparties

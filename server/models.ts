@@ -17,7 +17,17 @@
  * 4. Load trained models and use inference stubs below
  */
 
-import type { InteractionRecord } from "./types";
+import { computeAgentMetrics } from "./metrics";
+import type {
+  BehaviorContribution,
+  BehaviorFeatureHighlights,
+  BehaviorFlag,
+  BehaviorFlagKey,
+  BehaviorFlagSeverity,
+  InteractionRecord,
+  WalletBehaviorModel,
+} from "./types";
+import type { Store } from "./store";
 
 // ============================================================================
 // FEATURE EXTRACTION INTERFACES
@@ -820,8 +830,535 @@ export class ClusteringModel {
 }
 
 // ============================================================================
-// HELPER FUNCTIONS
+// RUNTIME HEURISTIC MODEL
 // ============================================================================
+
+const BEHAVIOR_MODEL_VERSION = "afi-heuristic/v1";
+
+type WindowedInteraction = {
+  createdAt: number;
+  counterparty?: string;
+  amountUsd: number | null;
+  receiptCount: number;
+  hasControlViolation: boolean;
+  settlementStatus?: string;
+  settlementLatencySeconds: number | null;
+};
+
+function clamp(value: number, min = 0, max = 1) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function round(value: number, digits = 4) {
+  const factor = 10 ** digits;
+  return Math.round(value * factor) / factor;
+}
+
+function parseTimestamp(value: string) {
+  return Date.parse(value);
+}
+
+function daysToMs(days: number) {
+  return days * 24 * 60 * 60 * 1000;
+}
+
+function normalizeAbove(value: number, floor: number, ceiling: number) {
+  if (value <= floor) return 0;
+  return clamp((value - floor) / (ceiling - floor));
+}
+
+function normalizeBelow(value: number, floor: number, ceiling: number) {
+  if (value >= ceiling) return 0;
+  return clamp((ceiling - value) / (ceiling - floor));
+}
+
+function toSeverity(impact: number): BehaviorFlagSeverity {
+  if (impact >= 0.12) return "high";
+  if (impact >= 0.06) return "medium";
+  return "low";
+}
+
+function createBehaviorFlag(
+  key: BehaviorFlagKey,
+  label: string,
+  value: number,
+  threshold: number,
+  direction: "above" | "below",
+  explanation: string,
+  impact: number,
+): BehaviorFlag {
+  return {
+    key,
+    label,
+    severity: toSeverity(impact),
+    value: round(value),
+    threshold,
+    direction,
+    explanation,
+  };
+}
+
+function buildWindowedInteractions(store: Store, wallet: string, now: number): WindowedInteraction[] {
+  return store.listInteractionsByWallet(wallet).map((interaction) => {
+    const createdAt = parseTimestamp(interaction.created_at);
+    const walletSnapshot = store.getWalletSnapshot(interaction.id);
+    const controls = deriveRuntimeControls(interaction, walletSnapshot);
+    const settlement = store.getSettlement(interaction.id);
+    const baseTx = settlement?.tx_hash ? store.getBaseTransaction(settlement.tx_hash) : undefined;
+    const amountUsd = getInteractionAmountUsd(store, interaction);
+    const settlementLatencySeconds =
+      settlement?.status === "confirmed" && baseTx
+        ? Math.max(0, (parseTimestamp(baseTx.created_at) - createdAt) / 1000)
+        : null;
+
+    return {
+      createdAt: Number.isFinite(createdAt) ? createdAt : now,
+      counterparty: interaction.counterparty,
+      amountUsd,
+      receiptCount: store.listReceiptsByInteraction(interaction.id).length,
+      hasControlViolation: controls.withinAllowance === false || controls.withinMaxTx === false,
+      settlementStatus: settlement?.status,
+      settlementLatencySeconds:
+        settlementLatencySeconds !== null && Number.isFinite(settlementLatencySeconds) ? settlementLatencySeconds : null,
+    };
+  });
+}
+
+function getInteractionAmountUsd(store: Store, interaction: InteractionRecord): number | null {
+  const paymentRequired = (interaction.summary?.paymentRequired ?? null) as
+    | { amount?: unknown; asset?: unknown; network?: unknown }
+    | null;
+
+  if (!paymentRequired || typeof paymentRequired.amount !== "string" || typeof paymentRequired.asset !== "string") {
+    return null;
+  }
+
+  const amount = Number(paymentRequired.amount);
+  const chainId = Number(paymentRequired.network);
+  if (!Number.isFinite(amount) || !Number.isFinite(chainId)) {
+    return null;
+  }
+
+  const price = store.getLatestPrice(paymentRequired.asset, chainId);
+  const priceUsd = Number(price?.price_usd);
+  return Number.isFinite(priceUsd) ? amount * priceUsd : null;
+}
+
+function deriveRuntimeControls(
+  interaction: InteractionRecord,
+  walletSnapshot: { allowance?: string; max_tx?: string; approvals_required?: boolean } | undefined,
+) {
+  const paymentRequired = (interaction.summary?.paymentRequired ?? null) as { amount?: unknown } | null;
+  const amount = paymentRequired && typeof paymentRequired.amount === "string" ? Number(paymentRequired.amount) : null;
+  const allowance = walletSnapshot?.allowance ? Number(walletSnapshot.allowance) : null;
+  const maxTx = walletSnapshot?.max_tx ? Number(walletSnapshot.max_tx) : null;
+
+  return {
+    withinAllowance: amount !== null && allowance !== null && Number.isFinite(amount) && Number.isFinite(allowance) ? amount <= allowance : null,
+    withinMaxTx: amount !== null && maxTx !== null && Number.isFinite(amount) && Number.isFinite(maxTx) ? amount <= maxTx : null,
+  };
+}
+
+function getAnalysisNow(interactions: InteractionRecord[]) {
+  const latest = interactions.reduce((max, interaction) => {
+    const timestamp = parseTimestamp(interaction.created_at);
+    return Number.isFinite(timestamp) ? Math.max(max, timestamp) : max;
+  }, 0);
+
+  return latest || Date.now();
+}
+
+function filterByWindow(rows: WindowedInteraction[], now: number, days: number) {
+  const cutoff = now - daysToMs(days);
+  return rows.filter((row) => row.createdAt >= cutoff);
+}
+
+function calculateTopCounterpartyShare(rows: WindowedInteraction[]) {
+  if (rows.length === 0) return 0;
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    const counterparty = row.counterparty ?? "unknown";
+    counts.set(counterparty, (counts.get(counterparty) ?? 0) + 1);
+  }
+  const topCount = Math.max(...counts.values());
+  return topCount / rows.length;
+}
+
+function calculateNewCounterpartyRate(rows7d: WindowedInteraction[], priorRows: WindowedInteraction[]) {
+  const current = new Set(rows7d.map((row) => row.counterparty).filter((value): value is string => Boolean(value)));
+  if (current.size === 0) return 0;
+  const prior = new Set(priorRows.map((row) => row.counterparty).filter((value): value is string => Boolean(value)));
+  let newCount = 0;
+  for (const counterparty of current) {
+    if (!prior.has(counterparty)) {
+      newCount += 1;
+    }
+  }
+  return newCount / current.size;
+}
+
+function calculateHourlyBurstRatio(rows24h: WindowedInteraction[]) {
+  if (rows24h.length < 3) return 0;
+  const hourlyCounts = new Map<string, number>();
+  for (const row of rows24h) {
+    const bucket = new Date(row.createdAt).toISOString().slice(0, 13);
+    hourlyCounts.set(bucket, (hourlyCounts.get(bucket) ?? 0) + 1);
+  }
+  const counts = Array.from(hourlyCounts.values());
+  const maxCount = Math.max(...counts);
+  const average = rows24h.length / 24;
+  return maxCount / average;
+}
+
+function calculatePaymentStats(rows30d: WindowedInteraction[]) {
+  const amounts = rows30d.map((row) => row.amountUsd).filter((value): value is number => value !== null && Number.isFinite(value));
+  if (amounts.length === 0) {
+    return { totalVolumeUsd30d: 0, avgPaymentUsd30d: 0, paymentSizeCv30d: 0 };
+  }
+  const total = amounts.reduce((sum, value) => sum + value, 0);
+  const average = total / amounts.length;
+  const variance = amounts.reduce((sum, value) => sum + (value - average) ** 2, 0) / amounts.length;
+  const stdDev = Math.sqrt(variance);
+  return {
+    totalVolumeUsd30d: total,
+    avgPaymentUsd30d: average,
+    paymentSizeCv30d: average > 0 ? stdDev / average : 0,
+  };
+}
+
+function calculateSettlementStats(rows30d: WindowedInteraction[]) {
+  const settled = rows30d.filter((row) => row.settlementStatus !== undefined);
+  const failures = settled.filter((row) => row.settlementStatus === "failed").length;
+  const latencies = settled
+    .map((row) => row.settlementLatencySeconds)
+    .filter((value): value is number => value !== null && Number.isFinite(value));
+
+  return {
+    settlementFailureRate30d: settled.length > 0 ? failures / settled.length : 0,
+    avgLatencySeconds30d: latencies.length > 0 ? latencies.reduce((sum, value) => sum + value, 0) / latencies.length : 0,
+  };
+}
+
+function calculateFeatureHighlights(store: Store, wallet: string, now: number): BehaviorFeatureHighlights {
+  const rows = buildWindowedInteractions(store, wallet, now);
+  const rows7d = filterByWindow(rows, now, 7);
+  const rows30d = filterByWindow(rows, now, 30);
+  const priorRows = rows.filter((row) => row.createdAt < now - daysToMs(7));
+  const paymentStats = calculatePaymentStats(rows30d);
+  const settlementStats = calculateSettlementStats(rows30d);
+  const agentMetrics = computeAgentMetrics(store, wallet);
+
+  return {
+    txCount7d: rows7d.length,
+    txCount30d: rows30d.length,
+    uniqueCounterparties30d: new Set(rows30d.map((row) => row.counterparty).filter((value): value is string => Boolean(value))).size,
+    topCounterpartyShare30d: calculateTopCounterpartyShare(rows30d),
+    totalVolumeUsd30d: paymentStats.totalVolumeUsd30d,
+    avgPaymentUsd30d: paymentStats.avgPaymentUsd30d,
+    paymentSizeCv30d: paymentStats.paymentSizeCv30d,
+    avgLatencySeconds30d: settlementStats.avgLatencySeconds30d,
+    settlementFailureRate30d: settlementStats.settlementFailureRate30d,
+    hourlyBurstRatio24h: calculateHourlyBurstRatio(filterByWindow(rows, now, 1)),
+    newCounterpartyRate7d: calculateNewCounterpartyRate(rows7d, priorRows),
+    evidenceDensity: agentMetrics.evidenceDensity,
+    controlFailureRate: agentMetrics.controls.overall.total > 0 ? 1 - agentMetrics.controls.overall.rate : 0,
+  };
+}
+
+function buildContributors(features: BehaviorFeatureHighlights, agentMetrics: ReturnType<typeof computeAgentMetrics>): BehaviorContribution[] {
+  if (agentMetrics.throughput.totalInteractions === 0) {
+    return [];
+  }
+
+  const weighted = [
+    {
+      key: "burstiness" as const,
+      label: "Burstiness",
+      value: agentMetrics.throughput.burstiness,
+      impact: normalizeAbove(agentMetrics.throughput.burstiness, 0.75, 2.5) * 0.18,
+      explanation: `Daily activity burstiness is ${agentMetrics.throughput.burstiness.toFixed(2)}.`,
+    },
+    {
+      key: "counterparty_concentration" as const,
+      label: "Counterparty concentration",
+      value: features.topCounterpartyShare30d,
+      impact: normalizeAbove(features.topCounterpartyShare30d, 0.45, 0.9) * 0.18,
+      explanation: `Top counterparty share is ${(features.topCounterpartyShare30d * 100).toFixed(0)}%.`,
+    },
+    {
+      key: "settlement_failure_rate" as const,
+      label: "Settlement failure rate",
+      value: features.settlementFailureRate30d,
+      impact: normalizeAbove(features.settlementFailureRate30d, 0.1, 0.6) * 0.18,
+      explanation: `Settlement failure rate is ${(features.settlementFailureRate30d * 100).toFixed(0)}%.`,
+    },
+    {
+      key: "control_friction" as const,
+      label: "Control friction",
+      value: features.controlFailureRate,
+      impact: normalizeAbove(features.controlFailureRate, 0.1, 0.7) * 0.14,
+      explanation: `Control failure rate is ${(features.controlFailureRate * 100).toFixed(0)}%.`,
+    },
+    {
+      key: "evidence_density" as const,
+      label: "Evidence density",
+      value: features.evidenceDensity,
+      impact: normalizeBelow(features.evidenceDensity, 0.75, 2.5) * 0.1,
+      explanation: `Evidence density is ${features.evidenceDensity.toFixed(2)} artifacts per interaction.`,
+    },
+    {
+      key: "settlement_latency" as const,
+      label: "Settlement latency",
+      value: features.avgLatencySeconds30d,
+      impact: normalizeAbove(features.avgLatencySeconds30d, 60, 600) * 0.1,
+      explanation: `Average confirmed settlement latency is ${features.avgLatencySeconds30d.toFixed(0)} seconds.`,
+    },
+    {
+      key: "payment_volatility" as const,
+      label: "Payment volatility",
+      value: features.paymentSizeCv30d,
+      impact: normalizeAbove(features.paymentSizeCv30d, 0.5, 2) * 0.06,
+      explanation: `Payment size CV is ${features.paymentSizeCv30d.toFixed(2)}.`,
+    },
+    {
+      key: "new_counterparty_rate" as const,
+      label: "New counterparty surge",
+      value: features.newCounterpartyRate7d,
+      impact: normalizeAbove(features.newCounterpartyRate7d, 0.4, 1) * 0.06,
+      explanation: `New counterparty rate over 7d is ${(features.newCounterpartyRate7d * 100).toFixed(0)}%.`,
+    },
+  ];
+
+  return weighted
+    .filter((entry) => entry.impact > 0)
+    .sort((left, right) => right.impact - left.impact)
+    .map((entry) => ({
+      ...entry,
+      value: round(entry.value),
+      impact: round(entry.impact),
+    }));
+}
+
+function buildFlags(
+  features: BehaviorFeatureHighlights,
+  agentMetrics: ReturnType<typeof computeAgentMetrics>,
+  contributors: BehaviorContribution[],
+): BehaviorFlag[] {
+  const flags: BehaviorFlag[] = [];
+  const byKey = new Map(contributors.map((contributor) => [contributor.key, contributor]));
+
+  const concentration = byKey.get("counterparty_concentration");
+  const concentrationImpact = concentration?.impact ?? round(normalizeAbove(features.topCounterpartyShare30d, 0.65, 0.95) * 0.18);
+  if (features.topCounterpartyShare30d >= 0.65) {
+    flags.push(
+      createBehaviorFlag(
+        "high_counterparty_concentration",
+        "High counterparty concentration",
+        features.topCounterpartyShare30d,
+        0.65,
+        "above",
+        `Top counterparty share is ${(features.topCounterpartyShare30d * 100).toFixed(0)}%.`,
+        concentrationImpact,
+      ),
+    );
+  }
+
+  const volatility = byKey.get("payment_volatility");
+  const volatilityImpact = volatility?.impact ?? round(normalizeAbove(features.paymentSizeCv30d, 1, 2.5) * 0.06);
+  if (features.paymentSizeCv30d >= 1) {
+    flags.push(
+      createBehaviorFlag(
+        "high_payment_volatility",
+        "High payment volatility",
+        features.paymentSizeCv30d,
+        1,
+        "above",
+        `Payment size CV is ${features.paymentSizeCv30d.toFixed(2)}.`,
+        volatilityImpact,
+      ),
+    );
+  }
+
+  const latency = byKey.get("settlement_latency");
+  const latencyImpact = latency?.impact ?? round(normalizeAbove(features.avgLatencySeconds30d, 120, 900) * 0.1);
+  if (features.avgLatencySeconds30d >= 120) {
+    flags.push(
+      createBehaviorFlag(
+        "high_settlement_latency",
+        "Slow settlement",
+        features.avgLatencySeconds30d,
+        120,
+        "above",
+        `Average confirmed settlement latency is ${features.avgLatencySeconds30d.toFixed(0)} seconds.`,
+        latencyImpact,
+      ),
+    );
+  }
+
+  const failures = byKey.get("settlement_failure_rate");
+  const failureImpact = failures?.impact ?? round(normalizeAbove(features.settlementFailureRate30d, 0.25, 0.75) * 0.18);
+  if (features.settlementFailureRate30d >= 0.25) {
+    flags.push(
+      createBehaviorFlag(
+        "high_failure_rate",
+        "Settlement failures",
+        features.settlementFailureRate30d,
+        0.25,
+        "above",
+        `Settlement failure rate is ${(features.settlementFailureRate30d * 100).toFixed(0)}%.`,
+        failureImpact,
+      ),
+    );
+  }
+
+  const burst = byKey.get("burstiness");
+  const burstImpact = burst?.impact ?? round(normalizeAbove(Math.max(features.hourlyBurstRatio24h, agentMetrics.throughput.burstiness), 2, 6) * 0.18);
+  if (features.hourlyBurstRatio24h >= 2 || agentMetrics.throughput.burstiness >= 1.25) {
+    flags.push(
+      createBehaviorFlag(
+        "burst_activity",
+        "Burst activity",
+        Math.max(features.hourlyBurstRatio24h, agentMetrics.throughput.burstiness),
+        2,
+        "above",
+        `Hourly burst ratio is ${features.hourlyBurstRatio24h.toFixed(2)} and daily burstiness is ${agentMetrics.throughput.burstiness.toFixed(2)}.`,
+        burstImpact,
+      ),
+    );
+  }
+
+  const newCounterparties = byKey.get("new_counterparty_rate");
+  const newCounterpartyImpact = newCounterparties?.impact ?? round(normalizeAbove(features.newCounterpartyRate7d, 0.6, 1) * 0.06);
+  if (features.newCounterpartyRate7d >= 0.6) {
+    flags.push(
+      createBehaviorFlag(
+        "new_counterparty_surge",
+        "New counterparty surge",
+        features.newCounterpartyRate7d,
+        0.6,
+        "above",
+        `New counterparty rate over 7d is ${(features.newCounterpartyRate7d * 100).toFixed(0)}%.`,
+        newCounterpartyImpact,
+      ),
+    );
+  }
+
+  const evidence = byKey.get("evidence_density");
+  const evidenceImpact = evidence?.impact ?? round(normalizeBelow(features.evidenceDensity, 0.75, 1.5) * 0.1);
+  if (features.evidenceDensity <= 1 && agentMetrics.throughput.totalInteractions > 0) {
+    flags.push(
+      createBehaviorFlag(
+        "thin_evidence",
+        "Thin evidence coverage",
+        features.evidenceDensity,
+        1,
+        "below",
+        `Evidence density is ${features.evidenceDensity.toFixed(2)} artifacts per interaction.`,
+        evidenceImpact,
+      ),
+    );
+  }
+
+  const controls = byKey.get("control_friction");
+  const controlImpact = controls?.impact ?? round(normalizeAbove(features.controlFailureRate, 0.25, 0.75) * 0.14);
+  if (features.controlFailureRate >= 0.25 && agentMetrics.controls.overall.total > 0) {
+    flags.push(
+      createBehaviorFlag(
+        "control_friction",
+        "Control friction",
+        features.controlFailureRate,
+        0.25,
+        "above",
+        `Control failure rate is ${(features.controlFailureRate * 100).toFixed(0)}%.`,
+        controlImpact,
+      ),
+    );
+  }
+
+  return flags.sort((left, right) => {
+    const order = { high: 0, medium: 1, low: 2 };
+    return order[left.severity] - order[right.severity];
+  });
+}
+
+function buildCluster(
+  features: BehaviorFeatureHighlights,
+  agentMetrics: ReturnType<typeof computeAgentMetrics>,
+): WalletBehaviorModel["cluster"] {
+  if (agentMetrics.throughput.totalInteractions < 3) {
+    return {
+      id: "emerging_wallet",
+      label: "emerging_wallet",
+      explanation: "Too little historical AFI activity exists yet to support a stronger cohort assignment.",
+    };
+  }
+
+  if (features.totalVolumeUsd30d >= 1000 && agentMetrics.settlement.successRate >= 0.75) {
+    return {
+      id: "high_value_settler",
+      label: "high_value_settler",
+      explanation: "This wallet shows sustained high-value volume with mostly successful settlement outcomes.",
+    };
+  }
+
+  if (features.topCounterpartyShare30d >= 0.75 || agentMetrics.counterparty.repeatRate >= 0.6) {
+    return {
+      id: "concentrated_power_user",
+      label: "concentrated_power_user",
+      explanation: "Activity is concentrated around a narrow service set with repeated counterparties.",
+    };
+  }
+
+  if (features.hourlyBurstRatio24h >= 2 || agentMetrics.throughput.burstiness >= 1.25 || features.newCounterpartyRate7d >= 0.6) {
+    return {
+      id: "bursty_explorer",
+      label: "bursty_explorer",
+      explanation: "Recent activity arrives in bursts and/or expands quickly into new counterparties.",
+    };
+  }
+
+  return {
+    id: "steady_operator",
+    label: "steady_operator",
+    explanation: "Activity is comparatively steady with repeat behavior and moderate risk signals.",
+  };
+}
+
+export function computeWalletBehaviorModel(store: Store, wallet: string): WalletBehaviorModel {
+  const interactions = store.listInteractionsByWallet(wallet);
+  const now = getAnalysisNow(interactions);
+  const agentMetrics = computeAgentMetrics(store, wallet);
+  const features = calculateFeatureHighlights(store, wallet, now);
+  const contributors = buildContributors(features, agentMetrics);
+  const normalizedScore = clamp(contributors.reduce((sum, contributor) => sum + contributor.impact, 0));
+  const anomalyLabel = normalizedScore >= 0.75 ? "anomalous" : normalizedScore >= 0.45 ? "elevated" : "normal";
+  const topSignals = contributors.slice(0, 3);
+  const cluster = buildCluster(features, agentMetrics);
+
+  return {
+    wallet,
+    anomaly: {
+      score: round(normalizedScore * 100, 2),
+      normalizedScore: round(normalizedScore),
+      label: anomalyLabel,
+      explanation:
+        topSignals.length > 0
+          ? `Primary drivers: ${topSignals.map((contributor) => contributor.label.toLowerCase()).join(", ")}.`
+          : "No elevated behavioral risk signals are currently present in AFI.",
+    },
+    cluster,
+    flags: buildFlags(features, agentMetrics, contributors),
+    topSignals,
+    features,
+    provenance: {
+      source: "afi_heuristic",
+      computedAt: new Date(now).toISOString(),
+      observationWindowDays: 30,
+      featureSource: "sqlite_runtime",
+      modelVersion: BEHAVIOR_MODEL_VERSION,
+    },
+  };
+}
 
 /**
  * Extract feature vector from interaction record

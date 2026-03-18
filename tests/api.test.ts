@@ -1480,6 +1480,7 @@ describe("server api logic", () => {
     await handlers.peacReceipt({}, res);
     await handlers.agentMetrics({ params: { wallet: "0xwallet" } }, res);
     await handlers.counterpartyMetrics({ params: { id: "svc" } }, res);
+    await handlers.walletBehaviorModel({ params: { wallet: "0xwallet" } }, res);
 
     expect(res.status).toHaveBeenCalled();
     expect(res.json).toHaveBeenCalled();
@@ -1512,6 +1513,7 @@ describe("server api logic", () => {
 
     expect((await api.agentMetrics("0xwallet")).body).toEqual(expect.objectContaining({ wallet: "0xwallet" }));
     expect((await api.counterpartyMetrics("svc")).body).toEqual(expect.objectContaining({ counterparty: "svc" }));
+    expect((await api.walletBehaviorModel("0xwallet")).body).toEqual(expect.objectContaining({ wallet: "0xwallet" }));
   });
 
   it("omits x402 packet details for locus interactions", async () => {

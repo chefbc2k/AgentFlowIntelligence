@@ -12,6 +12,7 @@ describe("QueryCache", () => {
     cache = new QueryCache({
       agentMetricsTTL: 1, // 1 second for faster testing
       counterpartyMetricsTTL: 1,
+      walletModelTTL: 1,
       flowAggregateTTL: 1,
       interactionListTTL: 1,
       enablePerformanceMonitoring: true,
@@ -138,6 +139,30 @@ describe("QueryCache", () => {
     it("handles case-insensitive counterparty names", () => {
       cache.getCounterpartyMetrics(mockStore, "Service1");
       cache.getCounterpartyMetrics(mockStore, "service1");
+
+      const stats = cache.getStats();
+      expect(stats.hits).toBe(1);
+    });
+  });
+
+  describe("getWalletBehaviorModel", () => {
+    it("caches wallet behavior model queries", () => {
+      const wallet = "0x123";
+
+      const result1 = cache.getWalletBehaviorModel(mockStore, wallet);
+      const result2 = cache.getWalletBehaviorModel(mockStore, wallet);
+
+      expect(result1.wallet).toBe(wallet);
+      expect(result2).toEqual(result1);
+
+      const stats = cache.getStats();
+      expect(stats.hits).toBe(1);
+      expect(stats.misses).toBe(1);
+    });
+
+    it("handles case-insensitive wallet behavior model keys", () => {
+      cache.getWalletBehaviorModel(mockStore, "0xABC");
+      cache.getWalletBehaviorModel(mockStore, "0xabc");
 
       const stats = cache.getStats();
       expect(stats.hits).toBe(1);
@@ -332,6 +357,7 @@ describe("QueryCache", () => {
 
       // Prime the cache
       cache.getAgentMetrics(mockStore, wallet);
+      cache.getWalletBehaviorModel(mockStore, wallet);
       expect(cache.getStats().size).toBeGreaterThan(0);
 
       // Invalidate
@@ -340,7 +366,8 @@ describe("QueryCache", () => {
       // Next call should be a cache miss
       cache.resetStats();
       cache.getAgentMetrics(mockStore, wallet);
-      expect(cache.getStats().misses).toBe(1);
+      cache.getWalletBehaviorModel(mockStore, wallet);
+      expect(cache.getStats().misses).toBe(2);
       expect(cache.getStats().hits).toBe(0);
     });
 
