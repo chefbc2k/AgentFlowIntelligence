@@ -93,29 +93,40 @@ const walletSnapshotSchema = z.object({
   allowance: z.string().optional(),
   max_tx: z.string().optional(),
   approvals_required: z.number().optional(),
-  metadata: z.record(z.unknown()).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
   created_at: z.string().optional(),
 });
 
+const x402TranscriptStepSchema = z.object({
+  status: z.number(),
+  headers: z.object({
+    paymentRequired: z.string().optional(),
+    paymentSignature: z.string().optional(),
+    paymentResponse: z.string().optional(),
+    peacReceipt: z.string().optional(),
+  }),
+});
+
 const x402TranscriptSchema = z.object({
-  challenge: z.object({
-    status: z.number(),
-    headers: z.record(z.string()),
-  }).optional(),
-  authorization: z.object({
-    status: z.number(),
-    headers: z.record(z.string()),
-  }).optional(),
-  settlement: z.object({
-    status: z.number(),
-    headers: z.record(z.string()),
-  }).optional(),
+  requestUrl: z.string(),
+  challenge: x402TranscriptStepSchema.optional(),
+  authorization: z
+    .object({
+      paymentSignature: z.string().optional(),
+    })
+    .optional(),
+  settlement: x402TranscriptStepSchema.optional(),
 });
 
 const ingestX402Schema = z.object({
-  headers: z.record(z.string()).optional(),
+  headers: z
+    .union([
+      z.record(z.string(), z.string()),
+      z.record(z.string(), z.union([z.string(), z.array(z.string()), z.undefined()])),
+    ])
+    .optional(),
   paymentSignature: z.string().optional(),
-  locusMetadata: z.record(z.unknown()).optional(),
+  locusMetadata: z.record(z.string(), z.unknown()).optional(),
   txHash: z.string().optional(),
   agentId: z.string().optional(),
   walletAddress: z.string().optional(),
@@ -132,10 +143,13 @@ const peacReceiptSchema = z.object({
   txHash: z.string().optional(),
 });
 
-function validateRequest<T>(schema: z.ZodSchema<T>, body: unknown): { success: true; data: T } | { success: false; error: string } {
+function validateRequest<T>(
+  schema: z.ZodType<T>,
+  body: unknown,
+): { success: true; data: T } | { success: false; error: string } {
   const result = schema.safeParse(body);
   if (!result.success) {
-    return { success: false, error: result.error.errors.map((e) => `${e.path.join(".")}: ${e.message}`).join("; ") };
+    return { success: false, error: result.error.issues.map((e: z.ZodIssue) => `${e.path.join(".")}: ${e.message}`).join("; ") };
   }
   return { success: true, data: result.data };
 }
@@ -364,7 +378,7 @@ export function createApi({ config, store }: { config: AppConfig; store: Store }
       }
       const validated = validation.data;
 
-      const headers = extractX402Headers(validated.headers ?? {});
+      const headers = extractX402Headers((validated.headers ?? {}) as Record<string, string | string[] | undefined>);
       const paymentSignature = validated.paymentSignature;
       if (!headers.paymentSignature && paymentSignature) {
         headers.paymentSignature = paymentSignature;

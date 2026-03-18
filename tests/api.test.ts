@@ -323,7 +323,7 @@ describe("server api logic", () => {
       url: "https://example.com/paid?token=redacted",
       walletSnapshot: { id: "ws1", wallet_address: "0xwallet" },
     });
-    expect(ingest.body.ok).toBe(true);
+    expect((ingest.body as { ok: boolean }).ok).toBe(true);
 
     const detail = api.getInteractionPacket((ingest.body as { interactionId: string }).interactionId);
     expect(detail.status).toBe(200);
@@ -807,13 +807,27 @@ describe("server api logic", () => {
       store,
     });
 
-    const ingest = await api.ingestX402({
+    // Test that validation rejects invalid txHash type
+    const invalidIngest = await api.ingestX402({
       headers: { "payment-required": "{\"amount\":\"1\"}" },
       agentId: "agent-1",
       walletAddress: "0xwallet",
       counterparty: "svc",
       service: "/paid",
       txHash: 123,
+      locusMetadata: { ok: true },
+      walletSnapshot: { id: "ws1", wallet_address: "0xwallet" },
+    } as unknown as Record<string, unknown>);
+    expect(invalidIngest.status).toBe(400);
+
+    // Test with valid types
+    const ingest = await api.ingestX402({
+      headers: { "payment-required": "{\"amount\":\"1\"}" },
+      agentId: "agent-1",
+      walletAddress: "0xwallet",
+      counterparty: "svc",
+      service: "/paid",
+      txHash: "0xtx",
       locusMetadata: { ok: true },
       walletSnapshot: { id: "ws1", wallet_address: "0xwallet" },
     });
@@ -829,6 +843,7 @@ describe("server api logic", () => {
       expect.objectContaining({ agent_id: "agent-1", wallet_address: "0xwallet", counterparty: "svc", service: "/paid" }),
     );
 
+    // Test that validation rejects invalid types for all string fields
     const ingest2 = await api.ingestX402({
       headers: {},
       agentId: 123,
@@ -836,30 +851,10 @@ describe("server api logic", () => {
       counterparty: true,
       service: { bad: true },
       url: 789,
-    });
-    const detail2 = api.getInteraction((ingest2.body as { interactionId: string }).interactionId);
-    expect(
-      (
-        detail2.body as {
-          interaction: {
-            agent_id?: string | null;
-            wallet_address?: string | null;
-            counterparty?: string | null;
-            service?: string | null;
-          };
-        }
-      ).interaction.agent_id == null,
-    ).toBe(true);
-    expect(
-      (
-        detail2.body as {
-          interaction: {
-            counterparty?: string | null;
-            service?: string | null;
-          };
-        }
-      ).interaction.service == null,
-    ).toBe(true);
+    } as unknown as Record<string, unknown>);
+    // Validation should reject this as a 400 error
+    expect(ingest2.status).toBe(400);
+    expect((ingest2.body as { error: string }).error).toContain("validation_error");
   });
 
   it("infers service identity from ingest urls and service metadata", async () => {
@@ -918,10 +913,19 @@ describe("server api logic", () => {
       store,
     });
 
-    const ingest = await api.ingestX402({
+    // Test that validation now rejects invalid types
+    const invalidIngest = await api.ingestX402({
       headers: { "peac-receipt": "{not-json}" },
       txHash: 123,
     } as unknown as Record<string, unknown>);
+    expect(invalidIngest.status).toBe(400);
+    expect((invalidIngest.body as { error: string }).error).toContain("validation_error");
+
+    // Test with valid types
+    const ingest = await api.ingestX402({
+      headers: { "peac-receipt": "{not-json}" },
+      txHash: "0xtx",
+    });
     expect(ingest.status).toBe(200);
     expect(store.listReceiptsByInteraction((ingest.body as { interactionId: string }).interactionId)).toHaveLength(1);
 
@@ -1310,6 +1314,117 @@ describe("server api logic", () => {
     expect((detail.body as unknown as { protocol: { kind: string; x402?: unknown } }).protocol).toEqual(
       expect.objectContaining({ kind: "locus", x402: undefined }),
     );
+  });
+
+  it("validates API request bodies with Zod schemas", async () => {
+    stubFetchForHappyPath();
+    const store = createTestStore();
+    const api = createApi({
+      config: createTestConfig({ locusApiKey: "test-key" }),
+      store,
+    });
+
+    // Test ingestX402 validation - should accept valid input
+    const validX402 = await api.ingestX402({
+      headers: { "payment-required": "1" },
+      txHash: "0xvalid",
+      agentId: "agent-1",
+      walletAddress: "0xwallet",
+      counterparty: "service",
+      service: "api",
+      url: "https://example.com",
+    });
+    expect(validX402.status).toBe(200);
+
+    // Test ingestX402 validation - should accept minimal valid input
+    const minimalX402 = await api.ingestX402({ headers: {} });
+    expect(minimalX402.status).toBe(200);
+
+    // Test ingestX402 validation - should accept transcript
+    const withTranscript = await api.ingestX402({
+      headers: {},
+      transcript: {
+        requestUrl: "https://example.com/paid",
+        challenge: { status: 402, headers: { paymentRequired: "1" } },
+        authorization: { paymentSignature: "sig123" },
+        settlement: { status: 200, headers: { paymentResponse: "ok" } },
+      },
+    });
+    expect(withTranscript.status).toBe(200);
+
+    // Test ingestX402 validation - should accept wallet snapshot
+    const withSnapshot = await api.ingestX402({
+      headers: {},
+      walletSnapshot: {
+        id: "snap-1",
+        wallet_address: "0xwallet",
+        balance: "100",
+        allowance: "50",
+        max_tx: "10",
+        approvals_required: 1,
+      },
+    });
+    expect(withSnapshot.status).toBe(200);
+
+    // Test ingestX402 validation - should reject invalid types
+    const invalidX402Headers = await api.ingestX402({
+      headers: "invalid", // should be object
+    });
+    expect(invalidX402Headers.status).toBe(400);
+    expect((invalidX402Headers.body as { error: string }).error).toContain("validation_error");
+
+    const invalidX402Transcript = await api.ingestX402({
+      headers: {},
+      transcript: "invalid", // should be object
+    });
+    expect(invalidX402Transcript.status).toBe(400);
+    expect((invalidX402Transcript.body as { error: string }).error).toContain("validation_error");
+
+    // Test peacReceipt validation - should accept valid input
+    // First create an interaction to associate the receipt with
+    const testIngest = await api.ingestX402({ headers: {} });
+    const testInteractionId = (testIngest.body as { interactionId: string }).interactionId;
+
+    const validReceipt = await api.peacReceipt({
+      receipt: "{\"ok\":true}",
+      interactionId: testInteractionId,
+      txHash: "0xtx",
+    });
+    expect(validReceipt.status).toBe(200);
+
+    // Test peacReceipt validation - should accept minimal valid input (receipt only)
+    const minimalReceipt = await api.peacReceipt({
+      receipt: "{\"data\":\"test\"}",
+    });
+    expect(minimalReceipt.status).toBe(200);
+
+    // Test peacReceipt validation - should reject missing receipt
+    const missingReceipt = await api.peacReceipt({});
+    expect(missingReceipt.status).toBe(400);
+    expect((missingReceipt.body as { error: string }).error).toContain("validation_error");
+
+    // Test peacReceipt validation - should reject invalid receipt type
+    const invalidReceiptType = await api.peacReceipt({
+      receipt: 123, // should be string
+    });
+    expect(invalidReceiptType.status).toBe(400);
+    expect((invalidReceiptType.body as { error: string }).error).toContain("validation_error");
+
+    // Test peacReceipt validation - should reject invalid interactionId type
+    const invalidInteractionIdType = await api.peacReceipt({
+      receipt: "{\"ok\":true}",
+      interactionId: 456, // should be string
+    });
+    expect(invalidInteractionIdType.status).toBe(400);
+    expect((invalidInteractionIdType.body as { error: string }).error).toContain("validation_error");
+
+    // Test peacReceipt validation - should reject invalid txHash type
+    const invalidTxHashType = await api.peacReceipt({
+      receipt: "{\"ok\":true}",
+      txHash: true, // should be string
+    });
+    expect(invalidTxHashType.status).toBe(400);
+    expect((invalidTxHashType.body as { error: string }).error).toContain("validation_error");
   });
 
   it("rejects locus calls when the key is missing", async () => {
