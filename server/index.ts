@@ -92,7 +92,10 @@ const walletSnapshotSchema = z.object({
   balance: z.string().optional(),
   allowance: z.string().optional(),
   max_tx: z.string().optional(),
-  approvals_required: z.number().optional(),
+  approvals_required: z
+    .union([z.boolean(), z.literal(0), z.literal(1)])
+    .transform((value) => value === true || value === 1)
+    .optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
   created_at: z.string().optional(),
 });
@@ -118,13 +121,10 @@ const x402TranscriptSchema = z.object({
   settlement: x402TranscriptStepSchema.optional(),
 });
 
+const headerValueSchema = z.union([z.string(), z.array(z.string()), z.undefined()]);
+
 const ingestX402Schema = z.object({
-  headers: z
-    .union([
-      z.record(z.string(), z.string()),
-      z.record(z.string(), z.union([z.string(), z.array(z.string()), z.undefined()])),
-    ])
-    .optional(),
+  headers: z.record(z.string(), headerValueSchema).optional(),
   paymentSignature: z.string().optional(),
   locusMetadata: z.record(z.string(), z.unknown()).optional(),
   txHash: z.string().optional(),
@@ -371,14 +371,14 @@ export function createApi({ config, store }: { config: AppConfig; store: Store }
         message: "Protocol label refreshed",
       });
     },
-    ingestX402: async (body: Record<string, unknown> | undefined) => {
+    ingestX402: async (body: unknown) => {
       const validation = validateRequest(ingestX402Schema, body);
       if (!validation.success) {
         return fail(400, `validation_error: ${validation.error}`);
       }
       const validated = validation.data;
 
-      const headers = extractX402Headers((validated.headers ?? {}) as Record<string, string | string[] | undefined>);
+      const headers = extractX402Headers(validated.headers ?? {});
       const paymentSignature = validated.paymentSignature;
       if (!headers.paymentSignature && paymentSignature) {
         headers.paymentSignature = paymentSignature;
@@ -620,7 +620,7 @@ export function createApi({ config, store }: { config: AppConfig; store: Store }
       );
       return ok(attestations);
     },
-    peacReceipt: async (body: Record<string, unknown> | undefined) => {
+    peacReceipt: async (body: unknown) => {
       const validation = validateRequest(peacReceiptSchema, body);
       if (!validation.success) {
         return fail(400, `validation_error: ${validation.error}`);
@@ -671,7 +671,7 @@ export function createRouteHandlers(api: ReturnType<typeof createApi>) {
       send(res, api.getInteractionPacket(String(req.params.id))),
     enrichProtocolLabel: async (req: { params: { id: string | string[] } }, res: JsonResponder) =>
       send(res, await api.enrichProtocolLabel(String(req.params.id))),
-    ingestX402: async (req: { body?: Record<string, unknown> }, res: JsonResponder) => send(res, await api.ingestX402(req.body)),
+    ingestX402: async (req: { body?: unknown }, res: JsonResponder) => send(res, await api.ingestX402(req.body)),
     enrichBase: async (req: { body?: Record<string, unknown> }, res: JsonResponder) => send(res, await api.enrichBase(req.body)),
     baseTx: async (req: { params: { hash: string | string[] } }, res: JsonResponder) => send(res, await api.baseTx(String(req.params.hash))),
     baseTxHistory: async (req: { params: { address: string | string[] } }, res: JsonResponder) =>
@@ -700,7 +700,7 @@ export function createRouteHandlers(api: ReturnType<typeof createApi>) {
     locusIngestTransactions: async (_req: unknown, res: JsonResponder) => send(res, await api.locusIngestTransactions()),
     easAttestations: async (req: { query: { address?: string | string[] } }, res: JsonResponder) =>
       send(res, await api.easAttestations(String(req.query.address ?? ""))),
-    peacReceipt: async (req: { body?: Record<string, unknown> }, res: JsonResponder) => send(res, await api.peacReceipt(req.body)),
+    peacReceipt: async (req: { body?: unknown }, res: JsonResponder) => send(res, await api.peacReceipt(req.body)),
     agentMetrics: (req: { params: { wallet: string | string[] } }, res: JsonResponder) =>
       send(res, api.agentMetrics(String(req.params.wallet))),
     counterpartyMetrics: (req: { params: { id: string | string[] } }, res: JsonResponder) =>

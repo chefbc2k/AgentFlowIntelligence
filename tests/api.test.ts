@@ -1361,10 +1361,23 @@ describe("server api logic", () => {
         balance: "100",
         allowance: "50",
         max_tx: "10",
-        approvals_required: 1,
+        approvals_required: true,
       },
     });
     expect(withSnapshot.status).toBe(200);
+
+    const withLegacyNumericSnapshot = await api.ingestX402({
+      headers: {},
+      walletSnapshot: {
+        id: "snap-legacy",
+        wallet_address: "0xwallet",
+        approvals_required: 1,
+      },
+    });
+    expect(withLegacyNumericSnapshot.status).toBe(200);
+    expect(
+      store.getWalletSnapshot((withLegacyNumericSnapshot.body as { interactionId: string }).interactionId)?.approvals_required,
+    ).toBe(true);
 
     // Test ingestX402 validation - should reject invalid types
     const invalidX402Headers = await api.ingestX402({
@@ -1425,6 +1438,12 @@ describe("server api logic", () => {
     });
     expect(invalidTxHashType.status).toBe(400);
     expect((invalidTxHashType.body as { error: string }).error).toContain("validation_error");
+
+    const invalidReceipt = await api.peacReceipt({
+      receipt: "",
+    });
+    expect(invalidReceipt.status).toBe(400);
+    expect((invalidReceipt.body as { error: string }).error).toBe("invalid_receipt");
   });
 
   it("rejects locus calls when the key is missing", async () => {

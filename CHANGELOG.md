@@ -78,6 +78,12 @@ Rules:
 
 ## 2026-03-18
 
+- Hardened the API request-validation boundary for AFI ingestion by validating raw `unknown` request bodies in `server/index.ts`, simplifying x402 header validation to the actual extractor contract, and normalizing legacy `walletSnapshot.approvals_required` inputs (`true`/`false` and `1`/`0`) onto the domain boolean model instead of letting request typing drift from storage/UI semantics.
+- Root cause fixed at source: the ingest boundary still assumed object-shaped request bodies and relied on a record-union plus cast for x402 headers, while the new validation slice had also narrowed `approvals_required` away from the persisted/read-model contract. That combination made the HTTP edge less truthful than the AFI domain model and left the coverage gate red on an untested PEAC failure path.
+- Added regression coverage for legacy numeric approval flags and the `invalid_receipt` PEAC rejection branch so the request boundary now proves both backward-compat normalization and the explicit failure policy under the repo-wide 100% coverage gate.
+- Files/modules affected: `server/index.ts`, `tests/api.test.ts`.
+- Validation status: `npm run validate` passed cleanly on March 18, 2026 with lint green, `tsc --noEmit` green, build green, and server + UI coverage at 100% lines / 100% statements / 100% functions / 100% branches.
+
 - Added protocol-attribution provenance as a first-class AFI evidence surface: protocol label enrichment now resolves through a shared backend path, exposes source/metadata/timestamp on enriched interactions and packet exports, and supports deterministic on-demand refresh for a selected interaction.
 - Root cause fixed at source: protocol labels were already persisted with `source`, `metadata`, and `created_at`, but that provenance was dropped by the read model and packet export path, while refresh was only available through the background Dune job. Centralized contract/query-address resolution in `server/protocol-labels.ts`, reused it across metrics/jobs/packet export/API, and tightened the UI refresh handler so it operates on an explicit interaction id instead of nullable component state.
 - Files/modules affected: `server/protocol-labels.ts`, `server/index.ts`, `server/jobs.ts`, `server/metrics.ts`, `server/packet.ts`, `server/types.d.ts`, `src/app.tsx`, `tests/api.test.ts`, `tests/jobs.test.ts`, `tests/packet.test.ts`, `tests/store.test.ts`, `tests/protocol-labels.test.ts`, `tests/ui/app.test.tsx`.
