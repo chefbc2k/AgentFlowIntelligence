@@ -9,7 +9,7 @@ import {
 } from "./x402";
 import { parsePeacReceipt } from "./peac";
 import { deriveControls } from "./controls";
-import type { EvidenceRecord, InteractionRecord, SettlementRecord, WalletSnapshotRecord } from "./types";
+import type { EvidenceRecord, InteractionRecord, SettlementRecord, WalletSnapshotRecord, X402Transcript } from "./types";
 
 export interface NormalizeInput {
   agentId?: string;
@@ -23,6 +23,7 @@ export interface NormalizeInput {
     paymentResponse?: string;
     peacReceipt?: string;
   };
+  transcript?: X402Transcript;
   txHash?: string;
   locusMetadata?: Record<string, unknown>;
   walletSnapshot?: WalletSnapshotRecord;
@@ -61,24 +62,34 @@ function inferServiceFromLocusMetadata(metadata?: Record<string, unknown>): { co
   return {};
 }
 
+function mergeTranscriptHeaders(input: NormalizeInput["paymentHeaders"], transcript?: X402Transcript) {
+  return {
+    paymentRequired: input.paymentRequired ?? transcript?.challenge?.headers.paymentRequired ?? transcript?.settlement?.headers.paymentRequired,
+    paymentSignature: input.paymentSignature ?? transcript?.authorization?.paymentSignature ?? transcript?.settlement?.headers.paymentSignature,
+    paymentResponse: input.paymentResponse ?? transcript?.settlement?.headers.paymentResponse,
+    peacReceipt: input.peacReceipt ?? transcript?.settlement?.headers.peacReceipt ?? transcript?.challenge?.headers.peacReceipt,
+  };
+}
+
 export function normalizeInteraction(input: NormalizeInput): NormalizedBundle {
   const createdAt = new Date().toISOString();
-  const paymentRequired = decodePaymentRequired(input.paymentHeaders.paymentRequired);
-  const paymentSignature = decodePaymentPayload(input.paymentHeaders.paymentSignature);
-  const paymentResponse = decodeSettlementResponse(input.paymentHeaders.paymentResponse);
-  const peacReceipt = parsePeacReceipt(input.paymentHeaders.peacReceipt);
+  const paymentHeaders = mergeTranscriptHeaders(input.paymentHeaders, input.transcript);
+  const paymentRequired = decodePaymentRequired(paymentHeaders.paymentRequired);
+  const paymentSignature = decodePaymentPayload(paymentHeaders.paymentSignature);
+  const paymentResponse = decodeSettlementResponse(paymentHeaders.paymentResponse);
+  const peacReceipt = parsePeacReceipt(paymentHeaders.peacReceipt);
   const inferredTxHash = extractSettlementTxHash(paymentResponse);
   const txHash = input.txHash ?? inferredTxHash;
   const settlementSuccess = extractSettlementSuccess(paymentResponse);
-  const x402 = buildX402Packet(input.paymentHeaders, { txHash });
-  const urlHints = inferServiceFromUrl(input.url);
+  const x402 = buildX402Packet(paymentHeaders, { txHash });
+  const urlHints = inferServiceFromUrl(input.url ?? input.transcript?.requestUrl);
   const locusHints = inferServiceFromLocusMetadata(input.locusMetadata);
   const counterparty = input.counterparty ?? urlHints.counterparty ?? locusHints.counterparty;
   const service = input.service ?? urlHints.service ?? locusHints.service;
   const interactionId = interactionIdFromParts([
-    input.paymentHeaders.paymentRequired ?? "",
-    input.paymentHeaders.paymentSignature ?? "",
-    input.paymentHeaders.paymentResponse ?? "",
+    paymentHeaders.paymentRequired ?? "",
+    paymentHeaders.paymentSignature ?? "",
+    paymentHeaders.paymentResponse ?? "",
     txHash ?? "",
   ]);
 
@@ -96,6 +107,7 @@ export function normalizeInteraction(input: NormalizeInput): NormalizedBundle {
       paymentResponse,
       txHash,
       x402,
+      x402Transcript: input.transcript,
     },
   };
 
@@ -125,6 +137,7 @@ export function normalizeInteraction(input: NormalizeInput): NormalizedBundle {
         paymentRequired,
         paymentSignature,
         paymentResponse,
+        transcript: input.transcript,
       },
     },
   ];

@@ -40,6 +40,17 @@ Rules:
 
 ## 2026-03-17
 
+- Shipped the AFI portable-packet slice end to end: added a typed canonical packet builder + backend export route contract, normalized `GET /api/interactions/:id` and `/api/interactions/:id/packet` onto the same packet envelope, and persisted x402 transcript chronology into packet protocol evidence.
+- Strengthened evidence correlation and presentation: receipt lookup now includes settlement-hash correlation, packets expose nested `protocol/evidence/correlations/provenance` sections, and the UI renders structured transcript, settlement, receipt, attestation, and evidence-timeline panels instead of treating the packet as a raw dump.
+- Made explorer/profile workflows navigable from the packet surface: flow helpers and UI interactions now drive packet selection plus agent/counterparty profile loading from explorer nodes, and packet downloads now use the backend export route rather than client-side `data:` serialization.
+- Files/modules affected: `server/packet.ts`, `server/index.ts`, `server/normalize.ts`, `server/store.ts`, `server/types.d.ts`, `src/app.tsx`, `package.json`, `tests/api.test.ts`, `tests/packet.test.ts`, `tests/ui/app.test.tsx`.
+- Validation status: `npm run validate` passed cleanly on March 17, 2026 with lint green, `tsc --noEmit` green, build green, server coverage `1357/1357` statements / `345/345` functions / `1047/1047` branches, and UI coverage `115/115` statements / `42/42` functions / `177/177` branches.
+
+- Promoted AFI packet export from an internal-detail dump to a first-class canonical packet flow: the API now serves `/api/interactions/:id/packet`, the UI renders packet metadata + verifier references directly from that contract, and packet downloads come from the canonical export route.
+- Root cause fixed at source: the repo had been partially migrated to the packet contract without the shared `server/packet.ts` source-of-truth module, so typecheck failed and packet/API/UI consumers drifted. Added the missing builder, merged transcript-derived headers during normalization, correlated tx-hash-only receipts into packets, and normalized the UI flow helpers so filtering/profile-loading paths stay testable.
+- Files/modules affected: `server/packet.ts`, `server/index.ts`, `server/normalize.ts`, `server/store.ts`, `server/types.d.ts`, `src/app.tsx`, `src/styles.css`, `tests/packet.test.ts`, `tests/api.test.ts`, `tests/normalize.test.ts`, `tests/store.test.ts`, `tests/ui/app.test.tsx`, `package.json`, `README.md`.
+- Validation status: `npm run validate` passed cleanly on March 17, 2026 with lint green, `tsc --noEmit` green, the UI build green, and both server + UI coverage at 100% lines / 100% statements / 100% functions / 100% branches.
+
 - Closed the remaining AFI enrichment-slice validation regressions by fixing the coverage runner’s shared-temp-dir collision and by covering the last protocol-aware metrics + UI flow-label branches.
 - Root cause fixed at source: counterparty-share math now divides by the real interaction count, `scripts/run-with-tmpdir.mjs` allocates a unique temp workspace per run, and coverage scripts emit into dedicated JSON report directories so server/UI V8 artifacts do not collide.
 - Added regression coverage for protocol-category rollups, inbound/outbound USD transfer totals, numeric stored price values, missing tx targets during protocol labeling, protocol-name/service flow labels, and packet amount rendering when `amountUSD` is present.

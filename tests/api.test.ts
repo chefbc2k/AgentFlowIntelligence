@@ -301,16 +301,27 @@ describe("server api logic", () => {
     });
     expect(ingest.body.ok).toBe(true);
 
-    const detail = api.getInteraction((ingest.body as { interactionId: string }).interactionId);
+    const detail = api.getInteractionPacket((ingest.body as { interactionId: string }).interactionId);
     expect(detail.status).toBe(200);
-    expect((detail.body as { interaction: { counterparty?: string; service?: string } }).interaction).toEqual(
+    expect((detail.body as unknown as { interaction: { counterparty?: string; service?: string } }).interaction).toEqual(
       expect.objectContaining({ counterparty: "example.com", service: "/paid" }),
     );
-    expect((detail.body as { receipts: unknown[] }).receipts).toHaveLength(1);
-    expect((detail.body as { settlement: { status: string } }).settlement.status).toBe("confirmed");
-    expect((detail.body as { x402: { challenge: { present: boolean } } }).x402.challenge.present).toBe(true);
-    expect((detail.body as { baseTransaction: { tx_hash: string } }).baseTransaction.tx_hash).toBe("0xtx");
-    expect((detail.body as { controls: { amount: number | null; source: string } }).controls).toEqual(
+    expect((detail.body as unknown as { evidence: { receipts: unknown[] } }).evidence.receipts).toHaveLength(1);
+    expect((detail.body as unknown as { correlations: { settlement: { status: string } } }).correlations.settlement.status).toBe(
+      "confirmed",
+    );
+    expect(
+      (detail.body as unknown as { protocol: { x402: { packet: { challenge: { present: boolean } } } } }).protocol.x402.packet.challenge.present,
+    ).toBe(true);
+    expect(
+      (detail.body as unknown as { correlations: { baseTransaction: { tx_hash: string } } }).correlations.baseTransaction.tx_hash,
+    ).toBe("0xtx");
+    expect((detail.body as unknown as { version: string }).version).toBe("afi.packet/v1");
+    expect((detail.body as unknown as { summary: { handshakeStatus: string } }).summary.handshakeStatus).toBe("challenge-only");
+    expect((detail.body as unknown as { references: { transaction: { explorerUrl: string } } }).references.transaction.explorerUrl).toBe(
+      "https://basescan.org/tx/0xtx",
+    );
+    expect((detail.body as unknown as { controls: { amount: number | null; source: string } }).controls).toEqual(
       expect.objectContaining({ amount: 1, source: "wallet_snapshot" }),
     );
     expect(store.getBaseTransaction("0xtx")?.tx_hash).toBe("0xtx");
@@ -324,9 +335,52 @@ describe("server api logic", () => {
     });
     const blank = store.getBaseTransaction("0xblank");
     expect(blank?.block_number).toBeUndefined();
-    expect(blank?.from).toBeUndefined();
-    expect(blank?.to).toBeUndefined();
-    expect(blank?.value).toBeUndefined();
+   expect(blank?.from).toBeUndefined();
+   expect(blank?.to).toBeUndefined();
+   expect(blank?.value).toBeUndefined();
+  });
+
+  it("correlates tx-hash receipts and transcript captures onto exported packets", async () => {
+    stubFetchForHappyPath();
+    const store = createTestStore();
+    const api = createApi({
+      config: createTestConfig(),
+      store,
+    });
+
+    const ingest = await api.ingestX402({
+      headers: {},
+      transcript: {
+        requestUrl: "https://example.com/paid",
+        challenge: {
+          status: 402,
+          headers: {
+            paymentRequired: "{\"amount\":\"1\",\"network\":\"base\"}",
+          },
+        },
+        authorization: {
+          paymentSignature: "{\"payer\":\"0xpayer\"}",
+        },
+        settlement: {
+          status: 200,
+          headers: {
+            paymentResponse: "{\"success\":true,\"transaction\":\"0xtx-transcript\"}",
+          },
+        },
+      },
+    });
+
+    await api.peacReceipt({ receipt: "{\"ok\":true}", txHash: "0xtx-transcript" });
+
+    const packet = api.getInteractionPacket((ingest.body as { interactionId: string }).interactionId);
+
+    expect(packet.status).toBe(200);
+    expect((packet.body as unknown as { protocol: { x402: { transcript: { requestUrl: string } } } }).protocol.x402.transcript.requestUrl).toBe(
+      "https://example.com/paid",
+    );
+    expect((packet.body as unknown as { evidence: { receipts: Array<{ id: string }> } }).evidence.receipts).toEqual([
+      expect.objectContaining({ id: expect.any(String) }),
+    ]);
   });
 
   it("correlates stored attestations onto interaction packets (case-insensitive)", async () => {
@@ -358,7 +412,7 @@ describe("server api logic", () => {
     ]);
 
     const detail = api.getInteraction(interactionId);
-    const attestations = (detail.body as { attestations: Array<{ id: string }> }).attestations;
+    const attestations = (detail.body as unknown as { attestations: Array<{ id: string }> }).attestations;
     expect(attestations.filter((row) => row.id === "att-1")).toHaveLength(1);
   });
 
@@ -375,19 +429,25 @@ describe("server api logic", () => {
     });
     const interactionId = (ingest.body as { interactionId: string }).interactionId;
 
-    const detail = api.getInteraction(interactionId);
+    const detail = api.getInteractionPacket(interactionId);
     expect(detail.status).toBe(200);
-    expect((detail.body as { settlement: { status: string; tx_hash?: string } }).settlement).toEqual(
+    expect((detail.body as unknown as { correlations: { settlement: { status: string; tx_hash?: string } } }).correlations.settlement).toEqual(
       expect.objectContaining({ status: "confirmed", tx_hash: "0xtx" }),
     );
-    expect((detail.body as { x402: { settlement: { txHash?: string; present: boolean } } }).x402).toEqual(
+    expect(
+      (
+        detail.body as unknown as {
+          protocol: { x402: { packet: { settlement: { txHash?: string; present: boolean } } } };
+        }
+      ).protocol.x402.packet,
+    ).toEqual(
       expect.objectContaining({
         settlement: expect.objectContaining({ present: true, txHash: "0xtx" }),
       }),
     );
-    expect(
-      (detail.body as { evidence: Array<{ kind: string }> }).evidence.some((row) => row.kind === "base_tx"),
-    ).toBe(true);
+    expect((detail.body as unknown as { evidence: { timeline: Array<{ kind: string }> } }).evidence.timeline.some((row) => row.kind === "base_tx")).toBe(
+      true,
+    );
   });
 
   it("returns enriched interaction detail with USD pricing from stored price snapshots", async () => {
@@ -510,14 +570,20 @@ describe("server api logic", () => {
       headers: { "payment-required": "{\"amount\":\"1\",\"network\":\"base\"}" },
       url: "https://example.com/paid",
     });
-    const challengeDetail = api.getInteraction((challengeOnly.body as { interactionId: string }).interactionId);
-    expect((challengeDetail.body as { x402: { challenge: { present: boolean }; settlement: { present: boolean } } }).x402).toEqual(
+    const challengeDetail = api.getInteractionPacket((challengeOnly.body as { interactionId: string }).interactionId);
+    expect(
+      (
+        challengeDetail.body as unknown as {
+          protocol: { x402: { packet: { challenge: { present: boolean }; settlement: { present: boolean } } } };
+        }
+      ).protocol.x402.packet,
+    ).toEqual(
       expect.objectContaining({
         challenge: expect.objectContaining({ present: true }),
         settlement: expect.objectContaining({ present: false }),
       }),
     );
-    expect((challengeDetail.body as { baseTransaction?: unknown }).baseTransaction).toBeUndefined();
+    expect((challengeDetail.body as unknown as { correlations: { baseTransaction?: unknown } }).correlations.baseTransaction).toBeUndefined();
 
     const settled = await api.ingestX402({
       headers: {
@@ -527,14 +593,24 @@ describe("server api logic", () => {
       paymentSignature: "{\"payer\":\"0xpayer\"}",
       url: "https://example.com/paid",
     });
-    const settledDetail = api.getInteraction((settled.body as { interactionId: string }).interactionId);
-    expect((settledDetail.body as { x402: { authorization: { hasSignature: boolean }; settlement: { success: boolean | null; txHash?: string } } }).x402).toEqual(
+    const settledDetail = api.getInteractionPacket((settled.body as { interactionId: string }).interactionId);
+    expect(
+      (
+        settledDetail.body as unknown as {
+          protocol: {
+            x402: { packet: { authorization: { hasSignature: boolean }; settlement: { success: boolean | null; txHash?: string } } };
+          };
+        }
+      ).protocol.x402.packet,
+    ).toEqual(
       expect.objectContaining({
         authorization: expect.objectContaining({ hasSignature: true }),
         settlement: expect.objectContaining({ success: true, txHash: "0xtx" }),
       }),
     );
-    expect((settledDetail.body as { baseTransaction: { status: string } }).baseTransaction.status).toBe("confirmed");
+    expect((settledDetail.body as unknown as { correlations: { baseTransaction: { status: string } } }).correlations.baseTransaction.status).toBe(
+      "confirmed",
+    );
   });
 
   it("sanitizes non-string ids and retains string metadata fields", async () => {
@@ -661,6 +737,7 @@ describe("server api logic", () => {
       txHash: 123,
     } as unknown as Record<string, unknown>);
     expect(ingest.status).toBe(200);
+    expect(store.listReceiptsByInteraction((ingest.body as { interactionId: string }).interactionId)).toHaveLength(1);
 
     const ingest2 = await api.ingestX402({});
     expect(ingest2.status).toBe(200);
@@ -809,6 +886,7 @@ describe("server api logic", () => {
     handlers.listInteractions({}, res);
     handlers.getInteraction({ params: { id: "missing" } }, res);
     handlers.getInteractionEnriched({ params: { id: "missing" } }, res);
+    handlers.getInteractionPacket({ params: { id: "missing" } }, res);
     await handlers.ingestX402({ body: { headers: {}, txHash: "0xtx" } }, res);
     await handlers.enrichBase({ body: { txHash: "0xtx" } }, res);
     await handlers.baseTx({ params: { hash: "0xtx" } }, res);
@@ -865,13 +943,15 @@ describe("server api logic", () => {
     expect((await api.peacReceipt({ receipt: "not-json", interactionId })).status).toBe(200);
     expect((await api.peacReceipt({ receipt: "{\"ok\":true}", interactionId: "" })).status).toBe(200);
     const detail = api.getInteraction(interactionId);
-    expect((detail.body as { evidence: Array<{ kind: string }> }).evidence.some((row) => row.kind === "peac")).toBe(true);
+    expect((detail.body as unknown as { evidence: Array<{ kind: string }> }).evidence.some((row) => row.kind === "peac")).toBe(
+      true,
+    );
 
     expect((await api.agentMetrics("0xwallet")).body).toEqual(expect.objectContaining({ wallet: "0xwallet" }));
     expect((await api.counterpartyMetrics("svc")).body).toEqual(expect.objectContaining({ counterparty: "svc" }));
   });
 
-  it("omits x402 transcript details for locus interactions", async () => {
+  it("omits x402 packet details for locus interactions", async () => {
     const store = createTestStore();
     store.upsertInteraction({
       id: "locus-1",
@@ -889,9 +969,11 @@ describe("server api logic", () => {
       store,
     });
 
-    const detail = api.getInteraction("locus-1");
+    const detail = api.getInteractionPacket("locus-1");
     expect(detail.status).toBe(200);
-    expect((detail.body as { x402?: unknown }).x402).toBeUndefined();
+    expect((detail.body as unknown as { protocol: { kind: string; x402?: unknown } }).protocol).toEqual(
+      expect.objectContaining({ kind: "locus", x402: undefined }),
+    );
   });
 
   it("rejects locus calls when the key is missing", async () => {

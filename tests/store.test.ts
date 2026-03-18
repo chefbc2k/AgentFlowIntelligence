@@ -153,6 +153,7 @@ describe("store", () => {
     expect(store.listAttestationsByWallet("0xWALLET")).toHaveLength(1);
     expect(store.listAttestationsByTxHash("0xTX")).toHaveLength(1);
     expect(store.listReceiptsByInteraction("i1")).toHaveLength(1);
+    expect(store.listReceiptsByTxHash("0xTX")).toHaveLength(1);
 
     // Cover the "approvals_required: false" write path as well.
     store.upsertWalletSnapshot({

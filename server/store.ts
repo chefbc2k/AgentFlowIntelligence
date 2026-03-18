@@ -406,6 +406,19 @@ export class Store {
     }));
   }
 
+  listReceiptsByTxHash(txHash: string) {
+    const rows = this.db
+      .prepare("select * from receipts where lower(tx_hash) = lower(?) order by created_at desc")
+      .all(txHash) as unknown as Array<ReceiptRecord & { raw: string }>;
+    return rows.map((row) => ({
+      id: row.id,
+      interaction_id: row.interaction_id ?? undefined,
+      tx_hash: row.tx_hash,
+      raw: JSON.parse(row.raw),
+      created_at: row.created_at,
+    }));
+  }
+
   upsertPrice(record: PriceRecord) {
     const stmt = this.db.prepare(
       `insert into prices (id, token_address, chain_id, symbol, price_usd, source, timestamp, raw)

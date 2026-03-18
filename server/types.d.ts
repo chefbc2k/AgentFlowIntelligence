@@ -98,6 +98,96 @@ export interface X402Transcript {
   settlement?: X402TranscriptStep;
 }
 
+export interface AfiPacketReferences {
+  wallet?: { address: string; explorerUrl: string };
+  counterparty?: { id: string; explorerUrl?: string };
+  service?: string;
+  transaction?: { txHash: string; explorerUrl: string };
+  protocol?: { name?: string; category?: string; contract?: string };
+}
+
+export interface AfiPacketSummary {
+  handshakeStatus: "complete" | "challenge-only" | "authorized" | "settled" | "not-captured";
+  controlStatus: "within-limits" | "over-limit" | "unknown";
+  settlementStatus: string;
+  receiptCount: number;
+  attestationCount: number;
+  evidenceKinds: string[];
+}
+
+export interface AfiPacketReceipt {
+  id: string;
+  created_at: string;
+  tx_hash?: string;
+  status: string;
+  decoded?: unknown;
+  raw: unknown;
+}
+
+export interface AfiPacketAttestation {
+  id: string;
+  attester?: string;
+  recipient?: string;
+  schemaId?: string;
+  txHash?: string;
+  chainId?: number;
+  created_at: string;
+  raw: Record<string, unknown>;
+}
+
+export interface AfiPacketProtocol {
+  kind: InteractionRecord["protocol"];
+  x402?: {
+    packet: X402Packet;
+    transcript?: X402Transcript;
+  };
+  locus?: {
+    transaction?: Record<string, unknown>;
+  };
+}
+
+export interface AfiPacketCorrelations {
+  settlement?: SettlementRecord;
+  baseTransaction?: BaseTransactionRecord;
+  walletSnapshot?: WalletSnapshotRecord;
+}
+
+export interface AfiPacketProvenance {
+  source: "afi";
+  interactionId: string;
+  exportRoute: string;
+  schemaVersion: "afi.packet/v1";
+}
+
+export interface AfiPacketV1 {
+  version: "afi.packet/v1";
+  exportedAt: string;
+  interaction: InteractionRecord & {
+    amountUSD?: number | null;
+    protocolName?: string;
+    protocolCategory?: string;
+    protocolContract?: string;
+  };
+  controls: {
+    amount: number | null;
+    currency: string | null;
+    approvalRequired: boolean | null;
+    withinAllowance: boolean | null;
+    withinMaxTx: boolean | null;
+    source: string;
+  };
+  protocol: AfiPacketProtocol;
+  evidence: {
+    timeline: EvidenceRecord[];
+    receipts: AfiPacketReceipt[];
+    attestations: AfiPacketAttestation[];
+  };
+  correlations: AfiPacketCorrelations;
+  provenance: AfiPacketProvenance;
+  summary: AfiPacketSummary;
+  references: AfiPacketReferences;
+}
+
 export interface WalletSnapshotRecord {
   id: string;
   interaction_id: string;

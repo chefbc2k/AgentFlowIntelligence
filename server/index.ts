@@ -13,6 +13,7 @@ import { deriveControls } from "./controls";
 import { PricingService } from "./pricing";
 import { DuneClient } from "./dune";
 import { JobScheduler } from "./jobs";
+import { buildInteractionContext, buildPortableInteractionPacket } from "./packet";
 import type { WalletSnapshotRecord } from "./types";
 import type { AppConfig } from "./config";
 
@@ -68,44 +69,38 @@ export function createApi({ config, store }: { config: AppConfig; store: Store }
       const receipts = store.listReceiptsByInteraction(id);
       const controls = deriveControls(interaction, walletSnapshot);
       const x402 = interaction.summary.x402;
+      const transcript = interaction.summary.x402Transcript ?? interaction.summary.transcript;
       const baseTransaction = settlement?.tx_hash ? store.getBaseTransaction(settlement.tx_hash) : undefined;
       const attestationRows = [
         ...(interaction.wallet_address ? store.listAttestationsByWallet(interaction.wallet_address) : []),
         ...(settlement?.tx_hash ? store.listAttestationsByTxHash(settlement.tx_hash) : []),
       ];
       const attestations = Array.from(new Map(attestationRows.map((row) => [row.id, row])).values());
-      return ok({ interaction, controls, x402, evidence, settlement, baseTransaction, walletSnapshot, receipts, attestations });
+      return ok({ interaction, controls, x402, transcript, evidence, settlement, baseTransaction, walletSnapshot, receipts, attestations });
     },
     getInteractionEnriched: (id: string) => {
       const interaction = store.getInteraction(id);
       if (!interaction) return fail(404, "not_found");
       const enrichedInteraction = enrichInteractionForReadModel(store, interaction);
-
-      const evidence = store.getEvidence(id);
-      const settlement = store.getSettlement(id);
-      const walletSnapshot = store.getWalletSnapshot(id);
-      const receipts = store.listReceiptsByInteraction(id);
-      const controls = deriveControls(interaction, walletSnapshot);
-      const x402 = interaction.summary.x402;
-      const baseTransaction = settlement?.tx_hash ? store.getBaseTransaction(settlement.tx_hash) : undefined;
-      const attestationRows = [
-        ...(interaction.wallet_address ? store.listAttestationsByWallet(interaction.wallet_address) : []),
-        ...(settlement?.tx_hash ? store.listAttestationsByTxHash(settlement.tx_hash) : []),
-      ];
-      const attestations = Array.from(new Map(attestationRows.map((row) => [row.id, row])).values());
-
+      const context = buildInteractionContext(store, interaction);
       return ok({
         interaction: enrichedInteraction,
         amountUSD: enrichedInteraction.amountUSD,
-        controls,
-        x402,
-        evidence,
-        settlement,
-        baseTransaction,
-        walletSnapshot,
-        receipts,
-        attestations,
+        controls: context.controls,
+        x402: context.x402,
+        transcript: context.transcript,
+        evidence: context.evidence,
+        settlement: context.settlement,
+        baseTransaction: context.baseTransaction,
+        walletSnapshot: context.walletSnapshot,
+        receipts: context.receipts,
+        attestations: context.attestations,
       });
+    },
+    getInteractionPacket: (id: string) => {
+      const interaction = store.getInteraction(id);
+      if (!interaction) return fail(404, "not_found");
+      return ok(buildPortableInteractionPacket(store, interaction));
     },
     ingestX402: async (body: Record<string, unknown> | undefined) => {
       const headers = extractX402Headers((body?.headers ?? {}) as Record<string, string>);
@@ -120,6 +115,7 @@ export function createApi({ config, store }: { config: AppConfig; store: Store }
       const counterparty = body?.counterparty ?? undefined;
       const service = body?.service ?? undefined;
       const url = body?.url ?? undefined;
+      const transcript = body?.transcript;
       const walletSnapshotInput = body?.walletSnapshot as WalletSnapshotRecord | undefined;
 
       const bundle = normalizeInteraction({
@@ -129,6 +125,7 @@ export function createApi({ config, store }: { config: AppConfig; store: Store }
         service: typeof service === "string" ? service : undefined,
         url: typeof url === "string" ? url : undefined,
         paymentHeaders: headers,
+        transcript: transcript && typeof transcript === "object" ? (transcript as Parameters<typeof normalizeInteraction>[0]["transcript"]) : undefined,
         txHash: typeof txHash === "string" ? txHash : undefined,
         locusMetadata: locusMetadata as Record<string, unknown> | undefined,
         walletSnapshot: walletSnapshotInput,
@@ -148,8 +145,11 @@ export function createApi({ config, store }: { config: AppConfig; store: Store }
         store.upsertWalletSnapshot(snapshot);
       }
 
-      const peac = parsePeacReceipt(headers.peacReceipt);
-      if (peac) {
+      const peacPayload = bundle.evidence.find((row) => row.kind === "peac")?.payload as
+        | { status: string; decoded?: unknown; raw?: unknown }
+        | undefined;
+      if (peacPayload && typeof peacPayload.raw === "string") {
+        const peac = parsePeacReceipt(peacPayload.raw)!;
         store.upsertReceipts([
           {
             id: peac.id,
@@ -380,6 +380,8 @@ export function createRouteHandlers(api: ReturnType<typeof createApi>) {
       send(res, api.getInteraction(String(req.params.id))),
     getInteractionEnriched: (req: { params: { id: string | string[] } }, res: JsonResponder) =>
       send(res, api.getInteractionEnriched(String(req.params.id))),
+    getInteractionPacket: (req: { params: { id: string | string[] } }, res: JsonResponder) =>
+      send(res, api.getInteractionPacket(String(req.params.id))),
     ingestX402: async (req: { body?: Record<string, unknown> }, res: JsonResponder) => send(res, await api.ingestX402(req.body)),
     enrichBase: async (req: { body?: Record<string, unknown> }, res: JsonResponder) => send(res, await api.enrichBase(req.body)),
     baseTx: async (req: { params: { hash: string | string[] } }, res: JsonResponder) => send(res, await api.baseTx(String(req.params.hash))),
@@ -458,6 +460,7 @@ export function createApp(options: CreateAppOptions = {}) {
   app.get("/api/interactions", handlers.listInteractions as never);
   app.get("/api/interactions/:id", handlers.getInteraction as never);
   app.get("/api/interactions/:id/enriched", handlers.getInteractionEnriched as never);
+  app.get("/api/interactions/:id/packet", handlers.getInteractionPacket as never);
   app.post("/api/ingest/x402", handlers.ingestX402 as never);
   app.post("/api/enrich/base", handlers.enrichBase as never);
   app.get("/api/base/tx/:hash", handlers.baseTx as never);

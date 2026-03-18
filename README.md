@@ -35,7 +35,8 @@ Base enrichment uses Etherscan v2 when a key is present and falls back to Blocks
 
 - `POST /api/ingest/x402` — ingest a paid call (headers + tx hash + optional `url`/`service` hints)
 - `GET /api/interactions` — list interactions
-- `GET /api/interactions/:id` — evidence packet
+- `GET /api/interactions/:id` — raw interaction detail
+- `GET /api/interactions/:id/packet` — canonical AFI portable packet export
 - `GET /api/locus/status` — Locus wallet status
 - `POST /api/locus/register` — Locus registration
 - `GET /api/locus/balance` — Locus balance
@@ -63,7 +64,7 @@ Base enrichment uses Etherscan v2 when a key is present and falls back to Blocks
 3. Ingest Locus transactions via `/api/locus/ingest/transactions`.
 4. Open the UI at `http://localhost:5173`.
 5. Inspect Agent Profile, Counterparty Profile, and Flow Explorer.
-6. Download the evidence packet JSON.
+6. Open an interaction and download the canonical packet JSON from the packet panel.
 
 ## x402 Capture Example
 

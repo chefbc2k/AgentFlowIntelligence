@@ -176,6 +176,51 @@ describe("normalizeInteraction", () => {
     );
   });
 
+  it("persists transcript evidence and derives headers/url from the transcript when raw headers are omitted", () => {
+    const bundle = normalizeInteraction({
+      paymentHeaders: {},
+      transcript: {
+        requestUrl: "https://example.com/paid",
+        challenge: {
+          status: 402,
+          headers: {
+            paymentRequired: "{\"amount\":\"3\",\"network\":\"base\"}",
+          },
+        },
+        authorization: {
+          paymentSignature: "{\"payer\":\"0xpayer\"}",
+        },
+        settlement: {
+          status: 200,
+          headers: {
+            paymentResponse: "{\"success\":true,\"transaction\":\"0xtx\"}",
+            peacReceipt: "{\"receipt\":\"ok\"}",
+          },
+        },
+      },
+    });
+
+    expect(bundle.interaction.counterparty).toBe("example.com");
+    expect(bundle.interaction.service).toBe("/paid");
+    expect(bundle.interaction.summary.x402Transcript).toEqual(
+      expect.objectContaining({ requestUrl: "https://example.com/paid" }),
+    );
+    expect(bundle.interaction.summary.x402).toEqual(
+      expect.objectContaining({
+        authorization: expect.objectContaining({ hasSignature: true }),
+        settlement: expect.objectContaining({ txHash: "0xtx", success: true }),
+      }),
+    );
+    expect(bundle.evidence.find((row) => row.kind === "peac")?.payload).toEqual(
+      expect.objectContaining({ status: "decoded" }),
+    );
+    expect(bundle.evidence.find((row) => row.kind === "x402")?.payload).toEqual(
+      expect.objectContaining({
+        transcript: expect.objectContaining({ requestUrl: "https://example.com/paid" }),
+      }),
+    );
+  });
+
   it("infers service identity from locus metadata provider/endpoint", () => {
     const bundle = normalizeInteraction({
       paymentHeaders: { paymentRequired: "{\"amount\":\"1\"}" },
