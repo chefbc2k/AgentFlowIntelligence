@@ -694,6 +694,19 @@ export function createApi({ config, store, queryCache }: { config: AppConfig; st
       startDate?: string;
       endDate?: string;
     } = {}) => ok(cache.getFlowAggregates(store, filters)),
+    dashboardAnalytics: (
+      filters: {
+        wallet?: string;
+        counterparty?: string;
+        protocol?: string;
+        startDate?: string;
+        endDate?: string;
+      } = {},
+      options: {
+        topLimit?: number;
+        recentLimit?: number;
+      } = {},
+    ) => ok(cache.getDashboardAnalytics(store, filters, options)),
     cacheStats: () => ok(cache.getStats()),
     cacheInvalidate: () => {
       cache.invalidateAll();
@@ -763,6 +776,36 @@ export function createRouteHandlers(api: ReturnType<typeof createApi>) {
           startDate: req.query.startDate ? String(req.query.startDate) : undefined,
           endDate: req.query.endDate ? String(req.query.endDate) : undefined,
         }),
+      ),
+    dashboardAnalytics: (
+      req: {
+        query: {
+          wallet?: string | string[];
+          counterparty?: string | string[];
+          protocol?: string | string[];
+          startDate?: string | string[];
+          endDate?: string | string[];
+          topLimit?: string | string[];
+          recentLimit?: string | string[];
+        };
+      },
+      res: JsonResponder,
+    ) =>
+      send(
+        res,
+        api.dashboardAnalytics(
+          {
+            wallet: req.query.wallet ? String(req.query.wallet) : undefined,
+            counterparty: req.query.counterparty ? String(req.query.counterparty) : undefined,
+            protocol: req.query.protocol ? String(req.query.protocol) : undefined,
+            startDate: req.query.startDate ? String(req.query.startDate) : undefined,
+            endDate: req.query.endDate ? String(req.query.endDate) : undefined,
+          },
+          {
+            topLimit: req.query.topLimit ? Number(req.query.topLimit) : undefined,
+            recentLimit: req.query.recentLimit ? Number(req.query.recentLimit) : undefined,
+          },
+        ),
       ),
     cacheStats: (_req: unknown, res: JsonResponder) => send(res, api.cacheStats()),
     cacheInvalidate: (_req: unknown, res: JsonResponder) => send(res, api.cacheInvalidate()),
@@ -855,6 +898,7 @@ export function createApp(options: CreateAppOptions = {}) {
   app.get("/api/metrics/agent/:wallet", handlers.agentMetrics as never);
   app.get("/api/metrics/counterparty/:id", handlers.counterpartyMetrics as never);
   app.get("/api/metrics/flow-aggregates", handlers.flowAggregates as never);
+  app.get("/api/metrics/dashboard", handlers.dashboardAnalytics as never);
   app.get("/api/cache/stats", handlers.cacheStats as never);
   app.post("/api/cache/invalidate", handlers.cacheInvalidate as never);
 

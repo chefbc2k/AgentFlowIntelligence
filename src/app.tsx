@@ -187,6 +187,43 @@ type FlowEdge = {
   count: number;
 };
 
+type ChartPoint = {
+  label: string;
+  value: number;
+};
+
+type DashboardAnalytics = {
+  totals: {
+    totalInteractions: number;
+    uniqueWallets: number;
+    uniqueCounterparties: number;
+    confirmedSettlements: number;
+    settlementRate: number;
+  };
+  dailySeries: Array<{ date: string; count: number }>;
+  topWallets: Array<{ wallet_address: string; count: number }>;
+  topCounterparties: Array<{ counterparty: string; count: number }>;
+  protocolSeries: Array<{ protocol: string; count: number }>;
+  settlementSuccessRateByCounterparty: Array<{ counterparty: string; total: number; confirmed: number; rate: number }>;
+  recentInteractions: Array<{
+    id: string;
+    created_at: string;
+    wallet_address: string | null;
+    counterparty: string | null;
+    service: string | null;
+    settlement_status: string | null;
+    tx_hash: string | null;
+  }>;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isDashboardAnalytics(value: unknown): value is DashboardAnalytics {
+  return isRecord(value) && isRecord(value.totals) && Array.isArray(value.dailySeries) && Array.isArray(value.recentInteractions);
+}
+
 export function formatAmount(detail: InteractionDetail) {
   if (detail.interaction.amountUSD !== null && detail.interaction.amountUSD !== undefined) {
     return `${detail.interaction.amountUSD.toFixed(2)} USD`;
@@ -277,8 +314,92 @@ export function buildFlowEdges(interactions: InteractionRow[]): FlowEdge[] {
   return Array.from(map.values());
 }
 
-export function App() {
+function formatPercent(value: number) {
+  return `${Math.round(value * 100)}%`;
+}
+
+function formatCompactNumber(value: number) {
+  return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(value);
+}
+
+function toDayKey(createdAt: string) {
+  const timestamp = new Date(createdAt).getTime();
+  return Number.isNaN(timestamp) ? "unknown" : new Date(timestamp).toISOString().slice(0, 10);
+}
+
+export function buildDailyActivitySeries(interactions: InteractionRow[]): ChartPoint[] {
+  const counts = new Map<string, number>();
+  for (const interaction of interactions) {
+    const key = toDayKey(interaction.created_at);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return Array.from(counts.entries())
+    .map(([label, value]) => ({ label, value }))
+    .sort((left, right) => left.label.localeCompare(right.label));
+}
+
+export function buildTopSeries(
+  items: InteractionRow[],
+  selectLabel: (interaction: InteractionRow) => string,
+  limit = 5,
+): ChartPoint[] {
+  const counts = new Map<string, number>();
+  for (const item of items) {
+    const label = selectLabel(item) || "unknown";
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+  return Array.from(counts.entries())
+    .map(([label, value]) => ({ label, value }))
+    .sort((left, right) => right.value - left.value || left.label.localeCompare(right.label))
+    .slice(0, limit);
+}
+
+function MiniBarChart({
+  title,
+  subtitle,
+  points,
+  formatValue = formatCompactNumber,
+  summaryValue,
+}: {
+  title: string;
+  subtitle: string;
+  points: ChartPoint[];
+  formatValue?: (value: number) => string;
+  summaryValue: string;
+}) {
+  const maxValue = points.reduce((max, point) => Math.max(max, point.value), 0) || 1;
+
+  return (
+    <div className="afi-chart" aria-label={title}>
+      <div className="afi-chart-head">
+        <div>
+          <span>{title}</span>
+          <p>{subtitle}</p>
+        </div>
+        <strong>{summaryValue}</strong>
+      </div>
+      <div className="afi-chart-bars">
+        {points.length === 0 && <p className="afi-muted">No data available.</p>}
+        {points.map((point) => {
+          const height = point.value <= 0 ? 0 : Math.max(12, Math.round((point.value / maxValue) * 100));
+          return (
+            <div key={`${title}:${point.label}`} className="afi-chart-column">
+              <div className="afi-chart-track">
+                <div className="afi-chart-fill" style={{ height: `${height}%` }} />
+              </div>
+              <span>{point.label}</span>
+              <strong>{formatValue(point.value)}</strong>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+export function App({ loadDashboard = true }: { loadDashboard?: boolean }) {
   const [interactions, setInteractions] = useState<InteractionRow[]>([]);
+  const [dashboard, setDashboard] = useState<DashboardAnalytics | null>(null);
   const [selected, setSelected] = useState<InteractionDetail | null>(null);
   const [flowFilter, setFlowFilter] = useState<{ wallet?: string; counterparty?: string; service?: string } | null>(null);
   const [wallet, setWallet] = useState("");
@@ -293,7 +414,14 @@ export function App() {
       .then((res) => res.json())
       .then(setInteractions)
       .catch(() => setInteractions([]));
-  }, []);
+
+    if (loadDashboard) {
+      fetch("/api/metrics/dashboard")
+        .then((res) => res.json())
+        .then((payload: unknown) => setDashboard(isDashboardAnalytics(payload) ? payload : null))
+        .catch(() => setDashboard(null));
+    }
+  }, [loadDashboard]);
 
   const loadDetail = (id: string) => {
     return fetch(`/api/interactions/${id}/packet`)
@@ -354,6 +482,57 @@ export function App() {
   const flowEdges = useMemo<FlowEdge[]>(() => buildFlowEdges(interactions), [interactions]);
 
   const visibleInteractions = useMemo(() => filterInteractionsByFlow(interactions, flowFilter), [flowFilter, interactions]);
+  const activitySeries = useMemo(
+    () => (dashboard ? dashboard.dailySeries.map((point) => ({ label: point.date, value: point.count })) : buildDailyActivitySeries(interactions)),
+    [dashboard, interactions],
+  );
+  const protocolSeries = useMemo(
+    () =>
+      dashboard
+        ? dashboard.protocolSeries.map((point) => ({ label: point.protocol || "unknown", value: point.count }))
+        : buildTopSeries(interactions, (interaction) => interaction.protocolName ?? interaction.protocol),
+    [dashboard, interactions],
+  );
+  const counterpartySeries = useMemo(
+    () =>
+      dashboard
+        ? dashboard.topCounterparties.map((point) => ({ label: point.counterparty || "unknown", value: point.count }))
+        : buildTopSeries(interactions, (interaction) => interaction.counterparty ?? "unknown"),
+    [dashboard, interactions],
+  );
+  const reliabilitySeries = useMemo(
+    () =>
+      dashboard
+        ? dashboard.settlementSuccessRateByCounterparty.slice(0, 5).map((point) => ({
+            label: point.counterparty || "unknown",
+            value: point.rate,
+          }))
+        : [],
+    [dashboard],
+  );
+  const latestInteraction = useMemo(
+    () => dashboard?.recentInteractions[0] ?? [...interactions].sort((left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime())[0],
+    [dashboard, interactions],
+  );
+  const latestActivityLabel = useMemo(() => {
+    if (!latestInteraction) {
+      return "No protocol labels yet";
+    }
+
+    if ("counterparty" in latestInteraction && latestInteraction.counterparty) {
+      return latestInteraction.counterparty;
+    }
+
+    if ("protocolName" in latestInteraction && latestInteraction.protocolName) {
+      return latestInteraction.protocolName;
+    }
+
+    if ("protocol" in latestInteraction && latestInteraction.protocol) {
+      return latestInteraction.protocol;
+    }
+
+    return "No protocol labels yet";
+  }, [latestInteraction]);
 
   const applyFilter = (filter: { wallet?: string; counterparty?: string; service?: string }) => {
     setFlowFilter(filter);
@@ -379,6 +558,64 @@ export function App() {
           </a>
         </div>
       </div>
+
+      <section className="afi-panel afi-dashboard">
+        <div className="afi-dashboard-summary">
+          <div className="afi-kpi">
+            <span>Interactions</span>
+            <strong>{formatCompactNumber(dashboard?.totals.totalInteractions ?? interactions.length)}</strong>
+            <p>{visibleInteractions.length === interactions.length ? "All rows visible" : `${formatCompactNumber(visibleInteractions.length)} rows filtered`}</p>
+          </div>
+          <div className="afi-kpi">
+            <span>Wallets</span>
+            <strong>{formatCompactNumber(dashboard?.totals.uniqueWallets ?? new Set(interactions.map((row) => row.wallet_address).filter(Boolean)).size)}</strong>
+            <p>{dashboard?.topWallets[0] ? `${dashboard.topWallets[0].wallet_address} leads current activity` : "Awaiting data"}</p>
+          </div>
+          <div className="afi-kpi">
+            <span>Counterparties</span>
+            <strong>{formatCompactNumber(dashboard?.totals.uniqueCounterparties ?? new Set(interactions.map((row) => row.counterparty).filter(Boolean)).size)}</strong>
+            <p>{dashboard?.topCounterparties[0] ? `${dashboard.topCounterparties[0].counterparty || "unknown"} is most active` : "Awaiting data"}</p>
+          </div>
+          <div className="afi-kpi">
+            <span>Settlement rate</span>
+            <strong>{formatPercent(dashboard?.totals.settlementRate ?? 0)}</strong>
+            <p>{formatCompactNumber(dashboard?.totals.confirmedSettlements ?? 0)} confirmed settlements</p>
+          </div>
+          <div className="afi-kpi">
+            <span>Latest activity</span>
+            <strong>{latestInteraction ? new Date(latestInteraction.created_at).toLocaleDateString() : "—"}</strong>
+            <p>{latestActivityLabel}</p>
+          </div>
+        </div>
+        <div className="afi-dashboard-charts">
+          <MiniBarChart
+            title="Activity by day"
+            subtitle="Interaction volume over time"
+            points={activitySeries}
+            summaryValue={formatCompactNumber(interactions.length)}
+          />
+          <MiniBarChart
+            title="Top counterparties"
+            subtitle="Interaction concentration by counterparty"
+            points={counterpartySeries}
+            summaryValue={formatCompactNumber(counterpartySeries.reduce((sum, point) => sum + point.value, 0))}
+          />
+          <MiniBarChart
+            title="Protocol mix"
+            subtitle="Most frequent protocol labels"
+            points={protocolSeries}
+            formatValue={formatCompactNumber}
+            summaryValue={formatCompactNumber(protocolSeries.reduce((sum, point) => sum + point.value, 0))}
+          />
+          <MiniBarChart
+            title="Settlement reliability"
+            subtitle="Confirmed settlement rate by counterparty"
+            points={reliabilitySeries}
+            formatValue={formatPercent}
+            summaryValue={formatPercent(dashboard?.totals.settlementRate ?? 0)}
+          />
+        </div>
+      </section>
 
       <div className="afi-grid">
         <section className="afi-panel">

@@ -563,6 +563,10 @@ export class Store {
     return this.parquetExporter;
   }
 
+  getDatabase() {
+    return this.db;
+  }
+
   async bootstrapParquetExport(): Promise<{
     success: boolean;
     results: Record<string, ExportResult>;

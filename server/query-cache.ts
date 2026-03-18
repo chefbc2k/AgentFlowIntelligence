@@ -4,6 +4,12 @@
  */
 
 import { Cache } from "./cache";
+import {
+  DuckDBQueryEngine,
+  type DashboardAnalyticsFilters,
+  type DashboardAnalyticsOptions,
+  type DashboardAnalyticsResult,
+} from "./duckdb-queries";
 import type { Store } from "./store";
 import { computeAgentMetrics, computeCounterpartyMetrics } from "./metrics";
 import type { InteractionRecord } from "./types";
@@ -15,6 +21,8 @@ export interface QueryCacheConfig {
   counterpartyMetricsTTL?: number;
   /** TTL in seconds for flow aggregate queries (default: 180 = 3 minutes) */
   flowAggregateTTL?: number;
+  /** TTL in seconds for dashboard analytics queries (default: 180 = 3 minutes) */
+  dashboardAnalyticsTTL?: number;
   /** TTL in seconds for interaction list queries (default: 60 = 1 minute) */
   interactionListTTL?: number;
   /** Enable performance monitoring and logging */
@@ -52,6 +60,7 @@ export class QueryCache {
       agentMetricsTTL: config.agentMetricsTTL ?? 300,
       counterpartyMetricsTTL: config.counterpartyMetricsTTL ?? 300,
       flowAggregateTTL: config.flowAggregateTTL ?? 180,
+      dashboardAnalyticsTTL: config.dashboardAnalyticsTTL ?? 180,
       interactionListTTL: config.interactionListTTL ?? 60,
       enablePerformanceMonitoring: config.enablePerformanceMonitoring ?? false,
     };
@@ -134,6 +143,33 @@ export class QueryCache {
   }
 
   /**
+   * Get dashboard analytics with caching
+   */
+  getDashboardAnalytics(
+    store: Store,
+    filters: DashboardAnalyticsFilters = {},
+    options: DashboardAnalyticsOptions = {},
+  ): DashboardAnalyticsResult {
+    const key = `dashboard_analytics:${JSON.stringify({ filters, options })}`;
+    const startTime = performance.now();
+
+    const cached = this.cache.get<DashboardAnalyticsResult>(key);
+    if (cached) {
+      this.hits++;
+      this.logPerformance("dashboard_analytics", true, performance.now() - startTime);
+      return cached;
+    }
+
+    this.misses++;
+    const analyticsEngine = new DuckDBQueryEngine(store.getDatabase());
+    const result = analyticsEngine.getDashboardOverview(filters, options);
+    this.cache.set(key, result, this.config.dashboardAnalyticsTTL);
+    this.logPerformance("dashboard_analytics", false, performance.now() - startTime);
+
+    return result;
+  }
+
+  /**
    * Get interactions list with caching
    */
   getInteractionsList(
@@ -183,6 +219,7 @@ export class QueryCache {
 
     // Clear all flow aggregates and interaction lists as they may be affected
     this.cache.clear("flow_aggregates:");
+    this.cache.clear("dashboard_analytics:");
     this.cache.clear("interactions_list:");
   }
 

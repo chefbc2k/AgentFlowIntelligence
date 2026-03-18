@@ -381,6 +381,89 @@ describe("server api logic", () => {
     expect(res.json).toHaveBeenCalled();
   });
 
+  it("serves dashboard analytics from the shared sqlite store", () => {
+    const store = createTestStore();
+    store.upsertInteraction({
+      id: "dash-1",
+      created_at: "2024-01-15T10:00:00Z",
+      wallet_address: "0xWallet1",
+      counterparty: "merchant-1",
+      service: "service-1",
+      protocol: "x402",
+      summary: {},
+    });
+    store.upsertSettlement({
+      id: "dash-settlement-1",
+      interaction_id: "dash-1",
+      status: "confirmed",
+      metadata: {},
+    });
+    store.upsertInteraction({
+      id: "dash-2",
+      created_at: "2024-01-16T11:00:00Z",
+      wallet_address: "0xWallet2",
+      counterparty: "merchant-2",
+      service: "service-2",
+      protocol: "locus",
+      summary: {},
+    });
+
+    const api = createApi({
+      config: createTestConfig(),
+      store,
+    });
+    const handlers = createRouteHandlers(api);
+    const res = {
+      status: vi.fn().mockReturnThis(),
+      json: vi.fn().mockReturnThis(),
+    };
+
+    const result = api.dashboardAnalytics({ wallet: "0xwallet1", protocol: "X402" }, { topLimit: 1, recentLimit: 1 });
+    expect(result.status).toBe(200);
+    expect(result.body).toEqual(
+      expect.objectContaining({
+        filters: expect.objectContaining({ wallet: "0xwallet1", protocol: "X402" }),
+        totals: expect.objectContaining({
+          totalInteractions: 1,
+          uniqueWallets: 1,
+          uniqueCounterparties: 1,
+          confirmedSettlements: 1,
+          settlementRate: 1,
+        }),
+      }),
+    );
+    expect(result.body.topWallets).toEqual([
+      expect.objectContaining({ wallet_address: "0xWallet1", count: 1 }),
+    ]);
+    expect(result.body.recentInteractions).toEqual([
+      expect.objectContaining({ id: "dash-1", settlement_status: "confirmed" }),
+    ]);
+
+    handlers.dashboardAnalytics({ query: { wallet: "0xwallet1", protocol: "X402", topLimit: "1", recentLimit: "1" } }, res);
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        totals: expect.objectContaining({ totalInteractions: 1 }),
+      }),
+    );
+
+    handlers.dashboardAnalytics(
+      { query: { counterparty: "merchant-1", startDate: "2024-01-15T00:00:00Z", endDate: "2024-01-15T23:59:59Z" } },
+      res,
+    );
+    expect(res.json).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        filters: expect.objectContaining({
+          wallet: undefined,
+          counterparty: "merchant-1",
+          protocol: undefined,
+          startDate: "2024-01-15T00:00:00Z",
+          endDate: "2024-01-15T23:59:59Z",
+        }),
+      }),
+    );
+  });
+
   it("runs query cache cleanup on the app interval", () => {
     vi.useFakeTimers();
     const queryCache = new QueryCache();
@@ -1491,6 +1574,23 @@ describe("server api logic", () => {
       },
     });
     expect(withTranscript.status).toBe(200);
+
+    const withMinimalTranscript = await api.ingestX402({
+      headers: {},
+      transcript: {
+        requestUrl: "https://example.com/minimal",
+      },
+    });
+    expect(withMinimalTranscript.status).toBe(200);
+
+    const withAuthorizationOnlyTranscript = await api.ingestX402({
+      headers: {},
+      transcript: {
+        requestUrl: "https://example.com/auth-only",
+        authorization: {},
+      },
+    });
+    expect(withAuthorizationOnlyTranscript.status).toBe(200);
 
     // Test ingestX402 validation - should accept wallet snapshot
     const withSnapshot = await api.ingestX402({

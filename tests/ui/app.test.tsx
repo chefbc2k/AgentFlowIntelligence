@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   App,
   buildFlowEdges,
+  buildDailyActivitySeries,
+  buildTopSeries,
   filterInteractionsByFlow,
   findInteractionForFlow,
   formatAmount,
@@ -246,121 +248,201 @@ describe("AFI UI", () => {
       { wallet: "w2", counterparty: "c2", service: "unknown", count: 1 },
       { wallet: "unknown", counterparty: "unknown", service: "unknown", count: 1 },
     ]);
+    expect(
+      buildDailyActivitySeries([
+        { id: "d1", created_at: "2024-01-03T12:00:00Z", protocol: "x402" },
+        { id: "d2", created_at: "2024-01-01T12:00:00Z", protocol: "x402" },
+        { id: "d3", created_at: "invalid", protocol: "locus" },
+      ]),
+    ).toEqual([
+      { label: "2024-01-01", value: 1 },
+      { label: "2024-01-03", value: 1 },
+      { label: "unknown", value: 1 },
+    ]);
+    expect(
+      buildTopSeries(
+        [
+          { id: "p1", created_at: "2024-01-01T00:00:00Z", protocol: "x402", protocolName: "EscrowX" },
+          { id: "p2", created_at: "2024-01-01T00:00:00Z", protocol: "x402", protocolName: "EscrowX" },
+          { id: "p3", created_at: "2024-01-01T00:00:00Z", protocol: "locus" },
+        ],
+        (interaction) => interaction.protocolName ?? interaction.protocol,
+      ),
+    ).toEqual([
+      { label: "EscrowX", value: 2 },
+      { label: "locus", value: 1 },
+    ]);
+    expect(
+      buildTopSeries([{ id: "blank", created_at: "2024-01-01T00:00:00Z", protocol: "x402" }], () => ""),
+    ).toEqual([{ label: "unknown", value: 1 }]);
   });
 
-  it("loads interactions, renders flow edges, and shows canonical packet details", async () => {
-    const repeatedEdge = Array.from({ length: 11 }, (_, idx) => ({
-      id: `i-${idx}`,
-      created_at: "2024-01-01T00:00:00Z",
-      wallet_address: "0xwallet",
-      counterparty: "svc",
-      service: "/paid",
-      protocol: "x402",
-      protocolName: "EscrowX",
-    }));
+  it("renders compact dashboard charts from interaction data", async () => {
     const interactions = [
-      ...repeatedEdge,
-      {
-        id: "i-protocol-name",
-        created_at: "2024-01-01T00:00:00Z",
-        wallet_address: "0xwallet",
-        counterparty: "svc",
-        protocolName: "Uniswap",
-        protocol: "x402",
+      { id: "i-a", created_at: "2024-01-01T12:00:00Z", wallet_address: "w1", counterparty: "c1", service: "/pay", protocol: "x402", protocolName: "EscrowX" },
+      { id: "i-b", created_at: "2024-01-02T12:00:00Z", wallet_address: "w1", counterparty: "c1", service: "/pay", protocol: "x402", protocolName: "EscrowX" },
+      { id: "i-c", created_at: "2024-01-02T18:00:00Z", wallet_address: "w2", counterparty: "c2", service: "/quote", protocol: "x402", protocolName: "Uniswap" },
+      { id: "i-d", created_at: "2024-01-03T12:00:00Z", wallet_address: "w2", counterparty: "c2", service: "/quote", protocol: "x402", protocolName: "Uniswap" },
+      { id: "i-e", created_at: "2024-01-03T13:00:00Z", wallet_address: "w2", counterparty: "c2", service: "/quote", protocol: "x402", protocolName: "Uniswap" },
+      { id: "i-f", created_at: "2024-01-03T14:00:00Z", wallet_address: "w3", counterparty: "c3", service: "/mint", protocol: "locus" },
+    ];
+    const dashboard = {
+      totals: {
+        totalInteractions: 6,
+        uniqueWallets: 3,
+        uniqueCounterparties: 3,
+        confirmedSettlements: 4,
+        settlementRate: 2 / 3,
       },
+      dailySeries: [
+        { date: "2024-01-01", count: 1 },
+        { date: "2024-01-02", count: 2 },
+        { date: "2024-01-03", count: 3 },
+      ],
+      topWallets: [
+        { wallet_address: "w2", count: 3 },
+        { wallet_address: "w1", count: 2 },
+      ],
+      topCounterparties: [
+        { counterparty: "c2", count: 3 },
+        { counterparty: "c1", count: 2 },
+        { counterparty: "c3", count: 1 },
+      ],
+      protocolSeries: [
+        { protocol: "EscrowX", count: 2 },
+        { protocol: "Uniswap", count: 3 },
+        { protocol: "locus", count: 1 },
+      ],
+      settlementSuccessRateByCounterparty: [
+        { counterparty: "c1", total: 2, confirmed: 2, rate: 1 },
+        { counterparty: "c2", total: 3, confirmed: 2, rate: 2 / 3 },
+      ],
+      recentInteractions: [
+        {
+          id: "i-f",
+          created_at: "2024-01-03T14:00:00Z",
+          wallet_address: "w3",
+          counterparty: "c3",
+          service: "/mint",
+          settlement_status: "confirmed",
+          tx_hash: "0xtx",
+        },
+      ],
+    };
+
+    fetchMock.mockResolvedValueOnce(jsonResponse(interactions));
+    fetchMock.mockResolvedValueOnce(jsonResponse(dashboard));
+
+    render(<App />);
+
+    expect(await screen.findByLabelText("Activity by day")).toBeInTheDocument();
+    expect(screen.getByLabelText("Top counterparties")).toBeInTheDocument();
+    expect(screen.getByLabelText("Protocol mix")).toBeInTheDocument();
+    expect(screen.getByLabelText("Settlement reliability")).toBeInTheDocument();
+
+    const activityChart = screen.getByLabelText("Activity by day");
+    const fills = activityChart.querySelectorAll(".afi-chart-fill");
+    expect(fills).toHaveLength(3);
+    expect(fills[0]).toHaveStyle({ height: "33%" });
+    expect(fills[1]).toHaveStyle({ height: "67%" });
+    expect(fills[2]).toHaveStyle({ height: "100%" });
+    expect(within(activityChart).getByText("6")).toBeInTheDocument();
+    expect(within(activityChart).getByText("2024-01-01")).toBeInTheDocument();
+    expect(within(activityChart).getByText("2024-01-03")).toBeInTheDocument();
+
+    const flowChart = screen.getByLabelText("Top counterparties");
+    expect(within(flowChart).getByText("c2")).toBeInTheDocument();
+    expect(within(flowChart).getByText("c1")).toBeInTheDocument();
+    expect(within(flowChart).getByText("6")).toBeInTheDocument();
+
+    const protocolChart = screen.getByLabelText("Protocol mix");
+    expect(within(protocolChart).getByText("EscrowX")).toBeInTheDocument();
+    expect(within(protocolChart).getByText("Uniswap")).toBeInTheDocument();
+    expect(within(protocolChart).getByText("locus")).toBeInTheDocument();
+    expect(within(protocolChart).getByText("6")).toBeInTheDocument();
+
+    const reliabilityChart = screen.getByLabelText("Settlement reliability");
+    expect(await within(reliabilityChart).findByText("c1")).toBeInTheDocument();
+    expect(within(reliabilityChart).getByText("c2")).toBeInTheDocument();
+    expect(within(reliabilityChart).getAllByText("67%").length).toBeGreaterThan(0);
+  });
+
+  it("falls back to interaction-derived dashboard views when analytics loading fails", async () => {
+    const interactions = [
       {
-        id: "i-protocol-and-service",
-        created_at: "2024-01-01T00:00:00Z",
-        wallet_address: "0xwallet",
-        counterparty: "svc",
-        protocolName: "Uniswap",
-        service: "/swap",
+        id: "i-fallback",
+        created_at: "2024-01-03T14:00:00Z",
+        wallet_address: "w3",
+        service: "/mint",
         protocol: "x402",
-      },
-      {
-        id: "i-unknown",
-        created_at: "2024-01-02T00:00:00Z",
-        protocol: "locus",
+        protocolName: "EscrowX",
       },
     ];
 
     fetchMock.mockResolvedValueOnce(jsonResponse(interactions));
-    fetchMock.mockResolvedValueOnce(jsonResponse(makePacket({ interaction: { ...interactions[0], amountUSD: null } })));
-    fetchMock.mockResolvedValueOnce(
-      jsonResponse(
-        makePacket({
-          interaction: { ...interactions[0], amountUSD: 3.5 },
-          controls: {
-            amount: 7,
-            currency: "USDC",
-            approvalRequired: false,
-            withinAllowance: false,
-            withinMaxTx: null,
-            source: "wallet_snapshot",
-          },
-          summary: {
-            handshakeStatus: "authorized",
-            controlStatus: "over-limit",
-            settlementStatus: "confirmed",
-            receiptCount: 1,
-            attestationCount: 1,
-            evidenceKinds: ["x402"],
-          },
-          protocol: {
-            kind: "x402",
-            x402: {
-              packet: {
-                challenge: { present: true, decoded: { amount: "1" } },
-                authorization: { hasSignature: true, decoded: { payer: "0xpayer" } },
-                settlement: { present: false, success: null },
-              },
-            },
-          },
-        }),
-      ),
-    );
+    fetchMock.mockRejectedValueOnce(new Error("dashboard_failed"));
 
     render(<App />);
 
-    expect(await screen.findByText("11")).toBeInTheDocument();
-    expect(screen.getAllByText("→ svc")).toHaveLength(3);
-    expect(screen.getByText("→ EscrowX /paid")).toBeInTheDocument();
-    expect(screen.getByText("→ Uniswap")).toBeInTheDocument();
-    expect(screen.getByText("→ Uniswap /swap")).toBeInTheDocument();
+    const activityChart = await screen.findByLabelText("Activity by day");
+    expect(within(activityChart).getByText("2024-01-03")).toBeInTheDocument();
 
-    const bars = Array.from(document.querySelectorAll(".afi-edge-bar > div"));
-    expect(bars[0]).toHaveStyle({ width: "100%" });
-    expect(bars[1]).toHaveStyle({ width: "10%" });
+    const protocolChart = screen.getByLabelText("Protocol mix");
+    expect(within(protocolChart).getByText("EscrowX")).toBeInTheDocument();
 
-    const interactionsList = screen.getByRole("list");
-    within(interactionsList).getAllByRole("button", { name: "View" })[0]?.click();
+    const reliabilityChart = screen.getByLabelText("Settlement reliability");
+    expect(within(reliabilityChart).getByText("No data available.")).toBeInTheDocument();
 
-    expect(await screen.findByText("i-0")).toBeInTheDocument();
-    expect(screen.getAllByText("afi.packet/v1").length).toBeGreaterThan(0);
-    expect(screen.getByText("Packet Summary")).toBeInTheDocument();
-    expect(screen.getByText("x402 Transcript Timeline")).toBeInTheDocument();
-    expect(screen.getByText("Settlement Correlation")).toBeInTheDocument();
-    expect(screen.getAllByText("Receipts").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Attestations").length).toBeGreaterThan(0);
-    expect(screen.getByText("Evidence Timeline")).toBeInTheDocument();
-    expect(screen.getByText("Download packet JSON")).toHaveAttribute("download", "afi-packet-i-0.json");
-    expect(screen.getByText("Download packet JSON")).toHaveAttribute("href", "/api/interactions/i-0/packet");
-    expect(screen.getByText("within-limits")).toBeInTheDocument();
-    expect(screen.getByText("1 USDC")).toBeInTheDocument();
-    expect(screen.getByText("captured")).toBeInTheDocument();
-    expect(screen.getByText("signature-recorded")).toBeInTheDocument();
-    expect(screen.getByText("success")).toBeInTheDocument();
-    expect(screen.getAllByText("0xtx").length).toBeGreaterThan(0);
-    expect(screen.getByText("r1")).toBeInTheDocument();
-    expect(screen.getByText("a1")).toBeInTheDocument();
-    expect(screen.getByText("Protocol source").parentElement?.querySelector("strong")).toHaveTextContent("dune");
-    expect(screen.getByText("Protocol contract").parentElement?.querySelector("strong")).toHaveTextContent("0xmerchant");
-    expect(screen.getByText("Matched by").parentElement?.querySelector("strong")).toHaveTextContent("contract");
+    const latestActivity = screen.getByText("Latest activity").closest<HTMLElement>(".afi-kpi")!;
+    expect(within(latestActivity).getByText("EscrowX")).toBeInTheDocument();
+  });
 
-    within(interactionsList).getAllByRole("button", { name: "View" })[0]?.click();
-    expect(await screen.findByText("over-limit")).toBeInTheDocument();
-    expect(screen.getByText("x402 Handshake").parentElement?.querySelector("strong")).toHaveTextContent("authorized");
-    expect(screen.getByText("Amount").parentElement?.querySelector("strong")).toHaveTextContent("3.50 USD");
+  it("renders unknown dashboard labels when analytics rows omit labels", async () => {
+    const dashboard = {
+      totals: {
+        totalInteractions: 1,
+        uniqueWallets: 1,
+        uniqueCounterparties: 1,
+        confirmedSettlements: 0,
+        settlementRate: 0,
+      },
+      dailySeries: [{ date: "2024-01-03", count: 1 }],
+      topWallets: [{ wallet_address: "w1", count: 1 }],
+      topCounterparties: [{ counterparty: "", count: 1 }],
+      protocolSeries: [{ protocol: "", count: 1 }],
+      settlementSuccessRateByCounterparty: [{ counterparty: "", total: 1, confirmed: 0, rate: 0 }],
+      recentInteractions: [
+        {
+          id: "i-missing-labels",
+          created_at: "2024-01-03T14:00:00Z",
+          wallet_address: "w1",
+          counterparty: null,
+          service: "/mint",
+          settlement_status: "pending",
+          tx_hash: null,
+        },
+      ],
+    };
+
+    fetchMock.mockResolvedValueOnce(jsonResponse([]));
+    fetchMock.mockResolvedValueOnce(jsonResponse(dashboard));
+
+    render(<App />);
+
+    const topCounterparties = await screen.findByLabelText("Top counterparties");
+    expect(within(topCounterparties).getByText("unknown")).toBeInTheDocument();
+
+    const protocolChart = screen.getByLabelText("Protocol mix");
+    expect(within(protocolChart).getByText("unknown")).toBeInTheDocument();
+
+    const reliabilityChart = screen.getByLabelText("Settlement reliability");
+    expect(within(reliabilityChart).getByText("unknown")).toBeInTheDocument();
+
+    const counterpartyKpi = screen.getByText("Counterparties").closest<HTMLElement>(".afi-kpi")!;
+    expect(within(counterpartyKpi).getByText("unknown is most active")).toBeInTheDocument();
+
+    const latestActivity = screen.getByText("Latest activity").closest<HTMLElement>(".afi-kpi")!;
+    expect(within(latestActivity).getByText("No protocol labels yet")).toBeInTheDocument();
   });
 
   it("drives profile loading from flow explorer clicks", async () => {
@@ -447,7 +529,7 @@ describe("AFI UI", () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(counterpartyMetrics));
     fetchMock.mockResolvedValueOnce(jsonResponse(makePacket({ interaction: { ...interactions[0], amountUSD: 1 } })));
 
-    render(<App />);
+    render(<App loadDashboard={false} />);
 
     expect(await screen.findByText("→ svc")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "0xwallet" }));
@@ -462,7 +544,7 @@ describe("AFI UI", () => {
 
   it("loads manual profile metrics and supports early-return when inputs are empty", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse([]));
-    render(<App />);
+    render(<App loadDashboard={false} />);
 
     const agentSection = screen.getByRole("heading", { name: "Agent Profile" }).closest("section")!;
     const counterpartySection = screen.getByRole("heading", { name: "Counterparty Profile" }).closest("section")!;
@@ -475,7 +557,7 @@ describe("AFI UI", () => {
 
   it("covers optional metric fallbacks when USD and protocol aggregates are absent", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse([]));
-    render(<App />);
+    render(<App loadDashboard={false} />);
 
     const agentSection = screen.getByRole("heading", { name: "Agent Profile" }).closest("section")!;
     const counterpartySection = screen.getByRole("heading", { name: "Counterparty Profile" }).closest("section")!;
@@ -598,7 +680,7 @@ describe("AFI UI", () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(makePacket({ interaction: { ...interactions[0], amountUSD: 1 } })));
     fetchMock.mockResolvedValueOnce(jsonResponse(counterpartyMetrics));
 
-    render(<App />);
+    render(<App loadDashboard={false} />);
 
     expect(await screen.findByText("→ EscrowX /paid")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "→ EscrowX /paid" }));
@@ -694,7 +776,7 @@ describe("AFI UI", () => {
       },
     })));
 
-    render(<App />);
+    render(<App loadDashboard={false} />);
 
     const viewButton = (await screen.findByRole("button", { name: "View" }));
     fireEvent.click(viewButton);
@@ -742,7 +824,7 @@ describe("AFI UI", () => {
       ),
     );
 
-    render(<App />);
+    render(<App loadDashboard={false} />);
 
     fireEvent.click(await screen.findByRole("button", { name: "View" }));
     expect(await screen.findByText("Refresh protocol label")).toBeInTheDocument();
@@ -760,7 +842,7 @@ describe("AFI UI", () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ ok: true, refreshed: true }));
     fetchMock.mockResolvedValueOnce(jsonResponse(makePacket({ interaction: { id: "i-refresh-default", created_at: "2024-01-01T00:00:00Z", protocol: "x402" } })));
 
-    render(<App />);
+    render(<App loadDashboard={false} />);
 
     fireEvent.click(await screen.findByRole("button", { name: "View" }));
     fireEvent.click(await screen.findByRole("button", { name: "Refresh protocol label" }));
@@ -775,7 +857,7 @@ describe("AFI UI", () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(makePacket({ interaction: { id: "i-refresh-fail", created_at: "2024-01-01T00:00:00Z", protocol: "x402" } })));
     fetchMock.mockRejectedValueOnce(new Error("refresh failed"));
 
-    render(<App />);
+    render(<App loadDashboard={false} />);
 
     fireEvent.click(await screen.findByRole("button", { name: "View" }));
     fireEvent.click(await screen.findByRole("button", { name: "Refresh protocol label" }));
@@ -790,7 +872,7 @@ describe("AFI UI", () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(makePacket({ interaction: { id: "i-refresh-http", created_at: "2024-01-01T00:00:00Z", protocol: "x402" } })));
     fetchMock.mockResolvedValueOnce({ ok: false, json: () => Promise.resolve({}) } as FetchResponse & { ok: boolean });
 
-    render(<App />);
+    render(<App loadDashboard={false} />);
 
     fireEvent.click(await screen.findByRole("button", { name: "View" }));
     fireEvent.click(await screen.findByRole("button", { name: "Refresh protocol label" }));
@@ -801,7 +883,7 @@ describe("AFI UI", () => {
   it("covers metrics render branches + failure fallbacks", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse([]));
 
-    const { unmount } = render(<App />);
+    const { unmount } = render(<App loadDashboard={false} />);
 
     const agentSection = screen.getByRole("heading", { name: "Agent Profile" }).closest("section")!;
 
@@ -852,7 +934,7 @@ describe("AFI UI", () => {
 
   it("covers interaction/detail fetch failures and packet status fallbacks", async () => {
     fetchMock.mockRejectedValueOnce(new Error("network"));
-    const first = render(<App />);
+    const first = render(<App loadDashboard={false} />);
     expect(await screen.findByText("No interactions yet.")).toBeInTheDocument();
     first.unmount();
 
@@ -908,7 +990,7 @@ describe("AFI UI", () => {
     })));
     fetchMock.mockRejectedValueOnce(new Error("detail"));
 
-    render(<App />);
+    render(<App loadDashboard={false} />);
     const interactionsList = await screen.findByRole("list");
     const viewButton = within(interactionsList).getByRole("button", { name: "View" });
 

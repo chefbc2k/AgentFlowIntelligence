@@ -1,3 +1,4 @@
+import { DatabaseSync } from "node:sqlite";
 import { describe, it, expect, beforeEach } from "vitest";
 import { QueryCache } from "../server/query-cache";
 import type { Store } from "../server/store";
@@ -237,6 +238,58 @@ describe("QueryCache", () => {
           count: 2,
         }),
       ]);
+    });
+  });
+
+  describe("getDashboardAnalytics", () => {
+    it("caches dashboard analytics queries against the shared store database", () => {
+      const db = new DatabaseSync(":memory:");
+      db.exec(`
+        CREATE TABLE interactions (
+          id TEXT PRIMARY KEY,
+          created_at TEXT NOT NULL,
+          agent_id TEXT,
+          wallet_address TEXT,
+          counterparty TEXT,
+          service TEXT,
+          protocol TEXT,
+          summary TEXT NOT NULL
+        );
+        CREATE TABLE settlements (
+          id TEXT PRIMARY KEY,
+          interaction_id TEXT NOT NULL,
+          tx_hash TEXT,
+          chain_id INTEGER,
+          status TEXT NOT NULL,
+          metadata TEXT NOT NULL
+        );
+      `);
+      db.prepare(
+        `INSERT INTO interactions (id, created_at, wallet_address, counterparty, service, protocol, summary)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ).run("dash-1", "2024-01-01T00:00:00Z", "0xabc", "merchant-1", "service-1", "x402", "{}");
+      db.prepare(
+        `INSERT INTO settlements (id, interaction_id, status, metadata)
+         VALUES (?, ?, ?, ?)`,
+      ).run("settlement-1", "dash-1", "confirmed", "{}");
+
+      const dashboardStore = {
+        getDatabase: () => db,
+      } as unknown as Store;
+
+      const result1 = cache.getDashboardAnalytics(dashboardStore, { wallet: "0xABC" }, { topLimit: 1, recentLimit: 1 });
+      const result2 = cache.getDashboardAnalytics(dashboardStore, { wallet: "0xABC" }, { topLimit: 1, recentLimit: 1 });
+
+      expect(result1.totals.totalInteractions).toBe(1);
+      expect(result1.totals.settlementRate).toBe(1);
+      expect(result1.topCounterparties).toEqual([{ counterparty: "merchant-1", count: 1 }]);
+      expect(result2).toEqual(result1);
+
+      const stats = cache.getStats();
+      expect(stats.hits).toBe(1);
+      expect(stats.misses).toBe(1);
+
+      db.close();
     });
   });
 
