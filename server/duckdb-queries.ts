@@ -1,4 +1,12 @@
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
+import type {
+  InteractionGraphEdge,
+  InteractionGraphEdgeKind,
+  InteractionGraphNode,
+  InteractionGraphNodeKind,
+  InteractionGraphPath,
+  InteractionGraphResult,
+} from "./types";
 
 type DatabaseConnection = {
   prepare(sql: string): {
@@ -44,6 +52,19 @@ export interface DashboardAnalyticsResult {
     tx_hash: string | null;
   }>;
 }
+
+type InteractionGraphRow = {
+  id: string;
+  created_at: string;
+  wallet_address: string;
+  counterparty: string;
+  service: string;
+  protocol: string;
+  settlement_status: string | null;
+  tx_hash: string | null;
+  evidence_count: number;
+  evidence_kinds: string;
+};
 
 /**
  * SQLite-backed analytical query engine.
@@ -511,6 +532,188 @@ export class DuckDBQueryEngine {
     };
   }
 
+  getInteractionGraph(interactionId: string): InteractionGraphResult | null {
+    const [focus] = this.query<{
+      id: string;
+      wallet_address: string | null;
+      counterparty: string | null;
+      service: string | null;
+    }>(
+      `
+      SELECT
+        i.id,
+        i.wallet_address,
+        i.counterparty,
+        i.service
+      FROM interactions i
+      WHERE i.id = ?
+      LIMIT 1
+      `,
+      [interactionId],
+    );
+
+    if (!focus) {
+      return null;
+    }
+
+    const clauses = ["i.id = ?"];
+    const params: SQLInputValue[] = [interactionId];
+
+    if (focus.wallet_address) {
+      clauses.push("LOWER(i.wallet_address) = LOWER(?)");
+      params.push(focus.wallet_address);
+    }
+
+    if (focus.counterparty) {
+      clauses.push("LOWER(i.counterparty) = LOWER(?)");
+      params.push(focus.counterparty);
+    }
+
+    if (focus.service) {
+      clauses.push("LOWER(i.service) = LOWER(?)");
+      params.push(focus.service);
+    }
+
+    const rows = this.query<InteractionGraphRow>(
+      `
+      SELECT
+        i.id,
+        i.created_at,
+        COALESCE(i.wallet_address, 'unknown') AS wallet_address,
+        COALESCE(i.counterparty, 'unknown') AS counterparty,
+        COALESCE(i.service, 'unknown') AS service,
+        i.protocol,
+        s.status AS settlement_status,
+        s.tx_hash AS tx_hash,
+        COUNT(DISTINCT e.id) AS evidence_count,
+        COALESCE(GROUP_CONCAT(DISTINCT e.kind), '') AS evidence_kinds
+      FROM interactions i
+      LEFT JOIN settlements s ON i.id = s.interaction_id
+      LEFT JOIN evidence e ON i.id = e.interaction_id
+      WHERE ${clauses.join(" OR ")}
+      GROUP BY
+        i.id,
+        i.created_at,
+        i.wallet_address,
+        i.counterparty,
+        i.service,
+        i.protocol,
+        s.status,
+        s.tx_hash
+      ORDER BY i.created_at DESC, i.id DESC
+      `,
+      params,
+    );
+
+    const nodeMap = new Map<string, InteractionGraphNode>();
+    const edgeMap = new Map<string, InteractionGraphEdge>();
+    const pathMap = new Map<string, InteractionGraphPath>();
+    const walletSet = new Set<string>();
+    const counterpartySet = new Set<string>();
+    const serviceSet = new Set<string>();
+    let totalEvidence = 0;
+    let settledInteractions = 0;
+
+    for (const row of rows) {
+      const highlighted = row.id === interactionId;
+      const evidenceKinds = splitEvidenceKinds(row.evidence_kinds);
+      totalEvidence += row.evidence_count;
+      walletSet.add(row.wallet_address);
+      counterpartySet.add(row.counterparty);
+      serviceSet.add(row.service);
+      if (row.settlement_status === "confirmed") {
+        settledInteractions += 1;
+      }
+
+      const walletId = createGraphId("wallet", row.wallet_address);
+      const counterpartyId = createGraphId("counterparty", row.counterparty);
+      const serviceId = createGraphId("service", row.service);
+      const settlementId = row.tx_hash ? createGraphId("settlement", row.tx_hash) : undefined;
+      const settlementStatus = normalizeSettlementStatus(row.settlement_status);
+
+      upsertGraphNode(nodeMap, walletId, "wallet", row.wallet_address, row.evidence_count, highlighted);
+      upsertGraphNode(nodeMap, counterpartyId, "counterparty", row.counterparty, row.evidence_count, highlighted);
+      upsertGraphNode(nodeMap, serviceId, "service", row.service, row.evidence_count, highlighted);
+
+      if (settlementId && row.tx_hash) {
+        upsertGraphNode(nodeMap, settlementId, "settlement", row.tx_hash, row.evidence_count, highlighted);
+      }
+
+      upsertGraphEdge(
+        edgeMap,
+        walletId,
+        counterpartyId,
+        "wallet_counterparty",
+        row.evidence_count,
+        highlighted,
+        settlementStatus,
+      );
+      upsertGraphEdge(
+        edgeMap,
+        counterpartyId,
+        serviceId,
+        "counterparty_service",
+        row.evidence_count,
+        highlighted,
+        settlementStatus,
+      );
+      if (settlementId) {
+        upsertGraphEdge(
+          edgeMap,
+          serviceId,
+          settlementId,
+          "service_settlement",
+          row.evidence_count,
+          highlighted,
+          settlementStatus,
+        );
+      }
+
+      const pathKey = [row.wallet_address, row.counterparty, row.service, row.tx_hash ?? "unsettled", settlementStatus].join("->");
+      const existingPath = pathMap.get(pathKey);
+      if (existingPath) {
+        existingPath.interactionIds.push(row.id);
+        existingPath.interactionCount += 1;
+        existingPath.evidenceCount += row.evidence_count;
+        existingPath.highlighted = existingPath.highlighted || highlighted;
+        existingPath.protocols = Array.from(
+          new Set([...existingPath.protocols, row.protocol as InteractionGraphPath["protocols"][number]]),
+        );
+        existingPath.evidenceKinds = Array.from(new Set([...existingPath.evidenceKinds, ...evidenceKinds]));
+      } else {
+        pathMap.set(pathKey, {
+          id: pathKey,
+          interactionIds: [row.id],
+          wallet: row.wallet_address,
+          counterparty: row.counterparty,
+          service: row.service,
+          settlement: row.tx_hash ?? undefined,
+          protocols: [row.protocol as InteractionGraphPath["protocols"][number]],
+          settlementStatus,
+          interactionCount: 1,
+          evidenceCount: row.evidence_count,
+          evidenceKinds,
+          highlighted,
+        });
+      }
+    }
+
+    return {
+      interactionId,
+      nodes: Array.from(nodeMap.values()).sort(compareGraphNodes),
+      edges: Array.from(edgeMap.values()).sort(compareGraphEdges),
+      paths: Array.from(pathMap.values()).sort(compareGraphPaths),
+      summary: {
+        totalInteractions: rows.length,
+        totalEvidence,
+        uniqueWallets: walletSet.size,
+        uniqueCounterparties: counterpartySet.size,
+        uniqueServices: serviceSet.size,
+        settlementRate: settledInteractions / rows.length,
+      },
+    };
+  }
+
   /**
    * Close the database connection
    */
@@ -519,6 +722,102 @@ export class DuckDBQueryEngine {
       this.db.close();
     }
   }
+}
+
+function splitEvidenceKinds(serialized: string): string[] {
+  if (!serialized) {
+    return [];
+  }
+
+  return serialized
+    .split(",")
+    .map((kind) => kind.trim())
+    .filter(Boolean)
+    .sort((left, right) => left.localeCompare(right));
+}
+
+function createGraphId(kind: InteractionGraphNodeKind, label: string) {
+  return `${kind}:${label.toLowerCase()}`;
+}
+
+function normalizeSettlementStatus(status: string | null): InteractionGraphPath["settlementStatus"] {
+  return status === "pending" || status === "confirmed" || status === "failed" || status === "unknown" ? status : "missing";
+}
+
+function upsertGraphNode(
+  map: Map<string, InteractionGraphNode>,
+  id: string,
+  kind: InteractionGraphNodeKind,
+  label: string,
+  evidenceCount: number,
+  highlighted: boolean,
+) {
+  const existing = map.get(id);
+  if (existing) {
+    existing.interactionCount += 1;
+    existing.evidenceCount += evidenceCount;
+    existing.highlighted = existing.highlighted || highlighted;
+    return;
+  }
+
+  map.set(id, {
+    id,
+    kind,
+    label,
+    interactionCount: 1,
+    evidenceCount,
+    highlighted,
+  });
+}
+
+function upsertGraphEdge(
+  map: Map<string, InteractionGraphEdge>,
+  source: string,
+  target: string,
+  kind: InteractionGraphEdgeKind,
+  evidenceCount: number,
+  highlighted: boolean,
+  settlementStatus: InteractionGraphEdge["settlementStatus"],
+) {
+  const id = `${kind}:${source}->${target}`;
+  const existing = map.get(id);
+  if (existing) {
+    existing.interactionCount += 1;
+    existing.evidenceCount += evidenceCount;
+    existing.highlighted = existing.highlighted || highlighted;
+    if (highlighted || existing.settlementStatus === undefined) {
+      existing.settlementStatus = settlementStatus;
+    }
+    return;
+  }
+
+  map.set(id, {
+    id,
+    source,
+    target,
+    kind,
+    interactionCount: 1,
+    evidenceCount,
+    highlighted,
+    settlementStatus,
+  });
+}
+
+function compareGraphNodes(left: InteractionGraphNode, right: InteractionGraphNode) {
+  return right.interactionCount - left.interactionCount || left.label.localeCompare(right.label);
+}
+
+function compareGraphEdges(left: InteractionGraphEdge, right: InteractionGraphEdge) {
+  return right.interactionCount - left.interactionCount || left.id.localeCompare(right.id);
+}
+
+function compareGraphPaths(left: InteractionGraphPath, right: InteractionGraphPath) {
+  const highlightDelta = Number(right.highlighted) - Number(left.highlighted);
+  if (highlightDelta !== 0) {
+    return highlightDelta;
+  }
+
+  return right.interactionCount - left.interactionCount || left.id.localeCompare(right.id);
 }
 
 /**

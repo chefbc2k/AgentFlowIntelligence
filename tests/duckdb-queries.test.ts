@@ -801,6 +801,316 @@ describe("DuckDBQueryEngine", () => {
       expect(() => sharedEngine.close()).not.toThrow();
     });
   });
+
+  describe("getInteractionGraph", () => {
+    it("returns null when the interaction does not exist", () => {
+      expect(engine.getInteractionGraph("missing")).toBeNull();
+    });
+
+    it("handles sparse focus interactions and reuses graph paths and edges across repeated neighborhoods", () => {
+      upsertInteraction({
+        id: "focus-sparse",
+        created_at: "2024-01-15T08:00:00Z",
+        wallet_address: undefined,
+        counterparty: undefined,
+        service: undefined,
+        protocol: "x402",
+        summary: {},
+      });
+      store.upsertEvidence([
+        {
+          id: "focus-sparse:evidence",
+          interaction_id: "focus-sparse",
+          kind: "x402",
+          payload: {},
+          created_at: "2024-01-15T08:00:00Z",
+        },
+      ]);
+
+      const sparseResult = engine.getInteractionGraph("focus-sparse");
+      expect(sparseResult).not.toBeNull();
+      expect(sparseResult?.summary).toEqual({
+        totalInteractions: 1,
+        totalEvidence: 1,
+        uniqueWallets: 1,
+        uniqueCounterparties: 1,
+        uniqueServices: 1,
+        settlementRate: 0,
+      });
+      expect(sparseResult?.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: "wallet:unknown", kind: "wallet", highlighted: true }),
+          expect.objectContaining({ id: "counterparty:unknown", kind: "counterparty", highlighted: true }),
+          expect.objectContaining({ id: "service:unknown", kind: "service", highlighted: true }),
+        ]),
+      );
+
+      upsertInteraction({
+        id: "repeat-focus",
+        created_at: "2024-01-15T10:00:00Z",
+        wallet_address: "0xWallet1",
+        counterparty: "merchant-1",
+        service: "/pay",
+        protocol: "x402",
+        summary: {},
+      });
+      upsertSettlement({
+        id: "repeat-focus:settlement",
+        interaction_id: "repeat-focus",
+        status: "confirmed",
+        tx_hash: "0xtx-repeat",
+        metadata: {},
+      });
+      store.upsertEvidence([
+        {
+          id: "repeat-focus:x402",
+          interaction_id: "repeat-focus",
+          kind: "x402",
+          payload: {},
+          created_at: "2024-01-15T10:00:00Z",
+        },
+      ]);
+
+      upsertInteraction({
+        id: "repeat-neighbor-1",
+        created_at: "2024-01-15T11:00:00Z",
+        wallet_address: "0xWallet2",
+        counterparty: "merchant-1",
+        service: "/quote",
+        protocol: "locus",
+        summary: {},
+      });
+      store.upsertEvidence([
+        {
+          id: "repeat-neighbor-1:locus",
+          interaction_id: "repeat-neighbor-1",
+          kind: "locus",
+          payload: {},
+          created_at: "2024-01-15T11:00:00Z",
+        },
+      ]);
+
+      upsertInteraction({
+        id: "repeat-neighbor-2",
+        created_at: "2024-01-15T12:00:00Z",
+        wallet_address: "0xWallet2",
+        counterparty: "merchant-1",
+        service: "/quote",
+        protocol: "locus",
+        summary: {},
+      });
+      store.upsertEvidence([
+        {
+          id: "repeat-neighbor-2:locus",
+          interaction_id: "repeat-neighbor-2",
+          kind: "locus",
+          payload: {},
+          created_at: "2024-01-15T12:00:00Z",
+        },
+        {
+          id: "repeat-neighbor-2:receipt",
+          interaction_id: "repeat-neighbor-2",
+          kind: "receipt",
+          payload: {},
+          created_at: "2024-01-15T12:00:01Z",
+        },
+      ]);
+
+      const repeatedResult = engine.getInteractionGraph("repeat-focus");
+      expect(repeatedResult).not.toBeNull();
+      expect(repeatedResult?.summary.settlementRate).toBeCloseTo(1 / 3);
+      expect(repeatedResult?.edges).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: "counterparty_service:counterparty:merchant-1->service:/quote",
+            interactionCount: 2,
+            evidenceCount: 3,
+            highlighted: false,
+            settlementStatus: "missing",
+          }),
+        ]),
+      );
+      expect(repeatedResult?.paths).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: "0xWallet2->merchant-1->/quote->unsettled->missing",
+            interactionIds: expect.arrayContaining(["repeat-neighbor-1", "repeat-neighbor-2"]),
+            interactionCount: 2,
+            evidenceCount: 3,
+            protocols: ["locus"],
+            evidenceKinds: ["locus", "receipt"],
+            highlighted: false,
+          }),
+        ]),
+      );
+    });
+
+    it("builds a relationship graph neighborhood from interaction, settlement, and evidence facts", () => {
+      upsertInteraction({
+        id: "focus",
+        created_at: "2024-01-15T10:00:00Z",
+        wallet_address: "0xWallet1",
+        counterparty: "merchant-1",
+        service: "/pay",
+        protocol: "x402",
+        summary: {},
+      });
+      upsertSettlement({
+        id: "settlement-focus",
+        interaction_id: "focus",
+        status: "confirmed",
+        tx_hash: "0xtx-focus",
+        metadata: {},
+      });
+      store.upsertEvidence([
+        {
+          id: "focus:x402",
+          interaction_id: "focus",
+          kind: "x402",
+          payload: {},
+          created_at: "2024-01-15T10:00:00Z",
+        },
+        {
+          id: "focus:receipt",
+          interaction_id: "focus",
+          kind: "receipt",
+          payload: {},
+          created_at: "2024-01-15T10:00:01Z",
+        },
+      ]);
+
+      upsertInteraction({
+        id: "neighbor",
+        created_at: "2024-01-15T11:00:00Z",
+        wallet_address: "0xWallet2",
+        counterparty: "merchant-1",
+        service: "/quote",
+        protocol: "locus",
+        summary: {},
+      });
+      store.upsertEvidence([
+        {
+          id: "neighbor:locus",
+          interaction_id: "neighbor",
+          kind: "locus",
+          payload: {},
+          created_at: "2024-01-15T11:00:00Z",
+        },
+      ]);
+
+      const result = engine.getInteractionGraph("focus");
+      expect(result).not.toBeNull();
+      expect(result?.summary).toEqual({
+        totalInteractions: 2,
+        totalEvidence: 3,
+        uniqueWallets: 2,
+        uniqueCounterparties: 1,
+        uniqueServices: 2,
+        settlementRate: 0.5,
+      });
+      expect(result?.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: "wallet:0xwallet1", kind: "wallet", highlighted: true }),
+          expect.objectContaining({ id: "counterparty:merchant-1", kind: "counterparty" }),
+          expect.objectContaining({ id: "service:/pay", kind: "service", highlighted: true }),
+          expect.objectContaining({ id: "settlement:0xtx-focus", kind: "settlement", highlighted: true }),
+        ]),
+      );
+      expect(result?.edges).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: "wallet_counterparty:wallet:0xwallet1->counterparty:merchant-1",
+            interactionCount: 1,
+            evidenceCount: 2,
+            highlighted: true,
+            settlementStatus: "confirmed",
+          }),
+          expect.objectContaining({
+            id: "counterparty_service:counterparty:merchant-1->service:/quote",
+            interactionCount: 1,
+            evidenceCount: 1,
+            highlighted: false,
+            settlementStatus: "missing",
+          }),
+        ]),
+      );
+      expect(result?.paths).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: "0xWallet1->merchant-1->/pay->0xtx-focus->confirmed",
+            interactionIds: ["focus"],
+            protocols: ["x402"],
+            evidenceKinds: ["receipt", "x402"],
+            highlighted: true,
+          }),
+          expect.objectContaining({
+            id: "0xWallet2->merchant-1->/quote->unsettled->missing",
+            interactionIds: ["neighbor"],
+            protocols: ["locus"],
+            evidenceKinds: ["locus"],
+            highlighted: false,
+          }),
+        ]),
+      );
+    });
+
+    it("sorts equally highlighted graph paths by interaction count and id", () => {
+      upsertInteraction({
+        id: "order-focus",
+        created_at: "2024-01-15T09:00:00Z",
+        wallet_address: "0xOrder",
+        counterparty: "merchant-order",
+        service: "/alpha",
+        protocol: "x402",
+        summary: {},
+      });
+      upsertInteraction({
+        id: "order-a",
+        created_at: "2024-01-15T10:00:00Z",
+        wallet_address: "0xOrder2",
+        counterparty: "merchant-order",
+        service: "/alpha",
+        protocol: "x402",
+        summary: {},
+      });
+      upsertInteraction({
+        id: "order-b",
+        created_at: "2024-01-15T11:00:00Z",
+        wallet_address: "0xOrder2",
+        counterparty: "merchant-order",
+        service: "/alpha",
+        protocol: "x402",
+        summary: {},
+      });
+      upsertInteraction({
+        id: "order-c",
+        created_at: "2024-01-15T12:00:00Z",
+        wallet_address: "0xOrder3",
+        counterparty: "merchant-order",
+        service: "/beta",
+        protocol: "x402",
+        summary: {},
+      });
+      upsertInteraction({
+        id: "order-d",
+        created_at: "2024-01-15T13:00:00Z",
+        wallet_address: "0xOrder4",
+        counterparty: "merchant-order",
+        service: "/aardvark",
+        protocol: "x402",
+        summary: {},
+      });
+
+      const result = engine.getInteractionGraph("order-focus");
+      expect(result).not.toBeNull();
+      expect(result?.paths.map((path) => path.id)).toEqual([
+        "0xOrder->merchant-order->/alpha->unsettled->missing",
+        "0xOrder2->merchant-order->/alpha->unsettled->missing",
+        "0xOrder3->merchant-order->/beta->unsettled->missing",
+        "0xOrder4->merchant-order->/aardvark->unsettled->missing",
+      ]);
+    });
+  });
 });
 
 describe("FeatureExtractor", () => {

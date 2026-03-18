@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { WalletBehaviorModel } from "../server/types";
+import type { InteractionGraphResult, WalletBehaviorModel } from "../server/types";
 
 type InteractionRow = {
   id: string;
@@ -246,6 +246,10 @@ function isWalletBehaviorModel(value: unknown): value is WalletBehaviorModel {
   );
 }
 
+function isInteractionGraphResult(value: unknown): value is InteractionGraphResult {
+  return isRecord(value) && Array.isArray(value.nodes) && Array.isArray(value.edges) && Array.isArray(value.paths) && isRecord(value.summary);
+}
+
 export function formatAmount(detail: InteractionDetail) {
   if (detail.interaction.amountUSD !== null && detail.interaction.amountUSD !== undefined) {
     return `${detail.interaction.amountUSD.toFixed(2)} USD`;
@@ -348,6 +352,10 @@ export function formatBehaviorCluster(label: WalletBehaviorModel["cluster"]["lab
   return label.replace(/_/g, " ");
 }
 
+export function formatGraphKind(kind: InteractionGraphResult["nodes"][number]["kind"]) {
+  return kind.replace(/_/g, " ");
+}
+
 function formatCompactNumber(value: number) {
   return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(value);
 }
@@ -431,6 +439,7 @@ export function App({ loadDashboard = true }: { loadDashboard?: boolean }) {
   const [interactions, setInteractions] = useState<InteractionRow[]>([]);
   const [dashboard, setDashboard] = useState<DashboardAnalytics | null>(null);
   const [selected, setSelected] = useState<InteractionDetail | null>(null);
+  const [selectedGraph, setSelectedGraph] = useState<InteractionGraphResult | null>(null);
   const [flowFilter, setFlowFilter] = useState<{ wallet?: string; counterparty?: string; service?: string } | null>(null);
   const [wallet, setWallet] = useState("");
   const [counterparty, setCounterparty] = useState("");
@@ -460,14 +469,23 @@ export function App({ loadDashboard = true }: { loadDashboard?: boolean }) {
       .then((res) => res.json())
       .then((detail: InteractionDetail) => {
         setSelected(detail);
+        setSelectedGraph(null);
         if (detail.references.wallet?.address) {
           setWallet(detail.references.wallet.address);
+          loadBehaviorModelFor(detail.references.wallet.address);
         }
         if (detail.references.counterparty?.id) {
           setCounterparty(detail.references.counterparty.id);
         }
+        void fetch(`/api/graph/interactions/${id}`)
+          .then((res) => res.json())
+          .then((payload: unknown) => setSelectedGraph(isInteractionGraphResult(payload) ? payload : null))
+          .catch(() => setSelectedGraph(null));
       })
-      .catch(() => setSelected(null));
+      .catch(() => {
+        setSelected(null);
+        setSelectedGraph(null);
+      });
   };
 
   const refreshProtocolLabel = (interactionId: string) => {
@@ -592,6 +610,22 @@ export function App({ loadDashboard = true }: { loadDashboard?: boolean }) {
 
   const selectedPacket = selected?.protocol.x402?.packet;
   const selectedTranscript = selected?.protocol.x402?.transcript;
+  const graphNodesByKind = useMemo(() => {
+    if (!selectedGraph) {
+      return new Map<InteractionGraphResult["nodes"][number]["kind"], InteractionGraphResult["nodes"]>();
+    }
+
+    const grouped = new Map<InteractionGraphResult["nodes"][number]["kind"], InteractionGraphResult["nodes"]>();
+    for (const node of selectedGraph.nodes) {
+      const bucket = grouped.get(node.kind);
+      if (bucket) {
+        bucket.push(node);
+      } else {
+        grouped.set(node.kind, [node]);
+      }
+    }
+    return grouped;
+  }, [selectedGraph]);
 
   return (
     <div className="afi-root">
@@ -944,6 +978,87 @@ export function App({ loadDashboard = true }: { loadDashboard?: boolean }) {
             {!selected && <p className="afi-muted">Select an interaction to inspect evidence.</p>}
             {selected && (
               <div className="afi-packet">
+                {selectedGraph && (
+                  <div className="afi-subpanel afi-relationship-drilldown">
+                    <h4>Relationship Drilldown</h4>
+                    <div className="afi-metrics">
+                      <div>
+                        <span>Neighborhood interactions</span>
+                        <strong>{selectedGraph.summary.totalInteractions}</strong>
+                      </div>
+                      <div>
+                        <span>Total evidence links</span>
+                        <strong>{selectedGraph.summary.totalEvidence}</strong>
+                      </div>
+                      <div>
+                        <span>Wallets</span>
+                        <strong>{selectedGraph.summary.uniqueWallets}</strong>
+                      </div>
+                      <div>
+                        <span>Counterparties</span>
+                        <strong>{selectedGraph.summary.uniqueCounterparties}</strong>
+                      </div>
+                      <div>
+                        <span>Services</span>
+                        <strong>{selectedGraph.summary.uniqueServices}</strong>
+                      </div>
+                      <div>
+                        <span>Settlement rate</span>
+                        <strong>{formatPercent(selectedGraph.summary.settlementRate)}</strong>
+                      </div>
+                    </div>
+                    <div className="afi-graph-node-groups">
+                      {Array.from(graphNodesByKind.entries()).map(([kind, nodes]) => (
+                        <div key={kind} className="afi-graph-node-group">
+                          <span>{formatGraphKind(kind)}</span>
+                          <div className="afi-chip-row">
+                            {nodes.map((node) => (
+                              <button
+                                key={node.id}
+                                className={`afi-chip afi-text-button${node.highlighted ? " afi-chip-high" : ""}`}
+                                onClick={() => {
+                                  if (kind === "wallet") {
+                                    setWallet(node.label);
+                                    loadAgentMetricsFor(node.label);
+                                    applyFilter({ wallet: node.label });
+                                    return;
+                                  }
+                                  if (kind === "counterparty") {
+                                    setCounterparty(node.label);
+                                    loadCounterpartyMetricsFor(node.label);
+                                    applyFilter({ counterparty: node.label });
+                                    return;
+                                  }
+                                  if (kind === "service") {
+                                    applyFilter({ service: node.label });
+                                  }
+                                }}
+                                disabled={kind === "settlement"}
+                              >
+                                {node.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="afi-stack">
+                      {selectedGraph.paths.map((path) => (
+                        <div key={path.id} className={`afi-record afi-graph-path${path.highlighted ? " afi-graph-path-active" : ""}`}>
+                          <div className="afi-graph-path-copy">
+                            <strong>{`${path.wallet} → ${path.counterparty} → ${path.service}`}</strong>
+                            <span>{path.settlement ? `→ ${path.settlement}` : "→ unsettled"}</span>
+                          </div>
+                          <div className="afi-graph-path-meta">
+                            <span>{`${path.interactionCount} interactions`}</span>
+                            <span>{`${path.evidenceCount} evidence`}</span>
+                            <span>{path.evidenceKinds.join(", ") || "no evidence kinds"}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 <div className="afi-packet-meta">
                   <div>
                     <span>ID</span>

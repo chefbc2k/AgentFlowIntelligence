@@ -311,6 +311,11 @@ a {
   padding: 4px 8px;
 }
 
+.afi-text-button:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
 .afi-edge-bar {
   height: 8px;
   background: #0f172a;
@@ -388,6 +393,28 @@ a {
   margin: 0 0 12px;
 }
 
+.afi-relationship-drilldown {
+  display: grid;
+  gap: 12px;
+}
+
+.afi-graph-node-groups {
+  display: grid;
+  gap: 10px;
+}
+
+.afi-graph-node-group {
+  display: grid;
+  gap: 8px;
+}
+
+.afi-graph-node-group > span {
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
 .afi-stack {
   display: grid;
   gap: 8px;
@@ -400,6 +427,28 @@ a {
   padding-bottom: 6px;
   border-bottom: 1px solid var(--stroke);
   font-size: 13px;
+}
+
+.afi-graph-path {
+  display: grid;
+  gap: 6px;
+}
+
+.afi-graph-path-active {
+  border-color: rgba(34, 211, 238, 0.4);
+}
+
+.afi-graph-path-copy,
+.afi-graph-path-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.afi-graph-path-meta {
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .afi-filter-row {

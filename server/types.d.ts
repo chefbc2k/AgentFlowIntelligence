@@ -377,3 +377,57 @@ export interface ProtocolLabelRecord {
   metadata: Record<string, unknown>;
   created_at: string;
 }
+
+export type InteractionGraphNodeKind = "wallet" | "counterparty" | "service" | "settlement";
+
+export type InteractionGraphEdgeKind = "wallet_counterparty" | "counterparty_service" | "service_settlement";
+
+export interface InteractionGraphNode {
+  id: string;
+  kind: InteractionGraphNodeKind;
+  label: string;
+  interactionCount: number;
+  evidenceCount: number;
+  highlighted: boolean;
+}
+
+export interface InteractionGraphEdge {
+  id: string;
+  source: string;
+  target: string;
+  kind: InteractionGraphEdgeKind;
+  interactionCount: number;
+  evidenceCount: number;
+  highlighted: boolean;
+  settlementStatus?: SettlementRecord["status"] | "missing";
+}
+
+export interface InteractionGraphPath {
+  id: string;
+  interactionIds: string[];
+  wallet: string;
+  counterparty: string;
+  service: string;
+  settlement?: string;
+  protocols: InteractionRecord["protocol"][];
+  settlementStatus: SettlementRecord["status"] | "missing";
+  interactionCount: number;
+  evidenceCount: number;
+  evidenceKinds: string[];
+  highlighted: boolean;
+}
+
+export interface InteractionGraphResult {
+  interactionId: string;
+  nodes: InteractionGraphNode[];
+  edges: InteractionGraphEdge[];
+  paths: InteractionGraphPath[];
+  summary: {
+    totalInteractions: number;
+    totalEvidence: number;
+    uniqueWallets: number;
+    uniqueCounterparties: number;
+    uniqueServices: number;
+    settlementRate: number;
+  };
+}

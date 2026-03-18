@@ -366,6 +366,7 @@ describe("server api logic", () => {
     );
     expect(await api.parquetBatchExport()).toEqual(expect.objectContaining({ status: 500, body: { error: "batch failed" } }));
     expect(api.flowAggregates({ wallet: "0xwallet" }).status).toBe(200);
+    expect(api.interactionGraph("missing").status).toBe(404);
     expect(api.cacheStats().status).toBe(200);
     expect(api.cacheInvalidate()).toEqual(expect.objectContaining({ status: 200, body: { ok: true, message: "cache_invalidated" } }));
     expect(statsSpy).toHaveBeenCalled();
@@ -373,6 +374,7 @@ describe("server api logic", () => {
 
     await handlers.parquetBootstrap({}, res);
     await handlers.parquetBatchExport({}, res);
+    handlers.interactionGraph({ params: { id: "missing" } }, res);
     handlers.flowAggregates({ query: { wallet: "0xwallet", startDate: "2024-01-01", endDate: "2024-01-02" } }, res);
     handlers.flowAggregates({ query: { counterparty: ["service1"], protocol: ["x402"] } }, res);
     handlers.cacheStats({}, res);
@@ -460,6 +462,86 @@ describe("server api logic", () => {
           startDate: "2024-01-15T00:00:00Z",
           endDate: "2024-01-15T23:59:59Z",
         }),
+      }),
+    );
+  });
+
+  it("serves an interaction graph neighborhood from the shared sqlite store", () => {
+    const store = createTestStore();
+    store.upsertInteraction({
+      id: "graph-focus",
+      created_at: "2024-01-15T10:00:00Z",
+      wallet_address: "0xWallet1",
+      counterparty: "merchant-1",
+      service: "/pay",
+      protocol: "x402",
+      summary: {},
+    });
+    store.upsertSettlement({
+      id: "graph-settlement",
+      interaction_id: "graph-focus",
+      tx_hash: "0xtx-focus",
+      status: "confirmed",
+      metadata: {},
+    });
+    store.upsertEvidence([
+      {
+        id: "graph-focus:evidence",
+        interaction_id: "graph-focus",
+        kind: "x402",
+        payload: {},
+        created_at: "2024-01-15T10:00:00Z",
+      },
+    ]);
+    store.upsertInteraction({
+      id: "graph-neighbor",
+      created_at: "2024-01-15T11:00:00Z",
+      wallet_address: "0xWallet2",
+      counterparty: "merchant-1",
+      service: "/quote",
+      protocol: "locus",
+      summary: {},
+    });
+
+    const api = createApi({
+      config: createTestConfig(),
+      store,
+    });
+    const handlers = createRouteHandlers(api);
+    const res = {
+      status: vi.fn().mockReturnThis(),
+      json: vi.fn().mockReturnThis(),
+    };
+
+    const result = api.interactionGraph("graph-focus");
+    expect(result.status).toBe(200);
+    expect(result.body).toEqual(
+      expect.objectContaining({
+        interactionId: "graph-focus",
+        summary: expect.objectContaining({
+          totalInteractions: 2,
+          totalEvidence: 1,
+          settlementRate: 0.5,
+        }),
+        nodes: expect.arrayContaining([
+          expect.objectContaining({ id: "wallet:0xwallet1", kind: "wallet", highlighted: true }),
+        ]),
+        paths: expect.arrayContaining([
+          expect.objectContaining({
+            id: "0xWallet1->merchant-1->/pay->0xtx-focus->confirmed",
+            interactionIds: ["graph-focus"],
+            highlighted: true,
+          }),
+        ]),
+      }),
+    );
+
+    handlers.interactionGraph({ params: { id: "graph-focus" } }, res);
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        interactionId: "graph-focus",
+        summary: expect.objectContaining({ totalInteractions: 2 }),
       }),
     );
   });

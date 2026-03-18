@@ -13,7 +13,7 @@ import {
 import { computeWalletBehaviorModel } from "./models";
 import type { Store } from "./store";
 import { computeAgentMetrics, computeCounterpartyMetrics } from "./metrics";
-import type { InteractionRecord } from "./types";
+import type { InteractionGraphResult, InteractionRecord } from "./types";
 
 export interface QueryCacheConfig {
   /** TTL in seconds for agent metrics queries (default: 300 = 5 minutes) */
@@ -26,6 +26,8 @@ export interface QueryCacheConfig {
   flowAggregateTTL?: number;
   /** TTL in seconds for dashboard analytics queries (default: 180 = 3 minutes) */
   dashboardAnalyticsTTL?: number;
+  /** TTL in seconds for interaction graph queries (default: 180 = 3 minutes) */
+  interactionGraphTTL?: number;
   /** TTL in seconds for interaction list queries (default: 60 = 1 minute) */
   interactionListTTL?: number;
   /** Enable performance monitoring and logging */
@@ -65,6 +67,7 @@ export class QueryCache {
       walletModelTTL: config.walletModelTTL ?? 300,
       flowAggregateTTL: config.flowAggregateTTL ?? 180,
       dashboardAnalyticsTTL: config.dashboardAnalyticsTTL ?? 180,
+      interactionGraphTTL: config.interactionGraphTTL ?? 180,
       interactionListTTL: config.interactionListTTL ?? 60,
       enablePerformanceMonitoring: config.enablePerformanceMonitoring ?? false,
     };
@@ -195,6 +198,26 @@ export class QueryCache {
     return result;
   }
 
+  getInteractionGraph(store: Store, interactionId: string): InteractionGraphResult | null {
+    const key = `interaction_graph:${interactionId}`;
+    const startTime = performance.now();
+
+    const cached = this.cache.get<InteractionGraphResult | null>(key);
+    if (cached !== undefined) {
+      this.hits++;
+      this.logPerformance("interaction_graph", true, performance.now() - startTime);
+      return cached;
+    }
+
+    this.misses++;
+    const analyticsEngine = new DuckDBQueryEngine(store.getDatabase());
+    const result = analyticsEngine.getInteractionGraph(interactionId);
+    this.cache.set(key, result, this.config.interactionGraphTTL);
+    this.logPerformance("interaction_graph", false, performance.now() - startTime);
+
+    return result;
+  }
+
   /**
    * Get interactions list with caching
    */
@@ -247,6 +270,7 @@ export class QueryCache {
     // Clear all flow aggregates and interaction lists as they may be affected
     this.cache.clear("flow_aggregates:");
     this.cache.clear("dashboard_analytics:");
+    this.cache.clear("interaction_graph:");
     this.cache.clear("interactions_list:");
   }
 

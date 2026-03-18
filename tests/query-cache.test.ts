@@ -14,6 +14,7 @@ describe("QueryCache", () => {
       counterpartyMetricsTTL: 1,
       walletModelTTL: 1,
       flowAggregateTTL: 1,
+      interactionGraphTTL: 1,
       interactionListTTL: 1,
       enablePerformanceMonitoring: true,
     });
@@ -318,6 +319,69 @@ describe("QueryCache", () => {
     });
   });
 
+  describe("getInteractionGraph", () => {
+    it("caches interaction graph queries against the shared store database", () => {
+      const db = new DatabaseSync(":memory:");
+      db.exec(`
+        CREATE TABLE interactions (
+          id TEXT PRIMARY KEY,
+          created_at TEXT NOT NULL,
+          agent_id TEXT,
+          wallet_address TEXT,
+          counterparty TEXT,
+          service TEXT,
+          protocol TEXT,
+          summary TEXT NOT NULL
+        );
+        CREATE TABLE settlements (
+          id TEXT PRIMARY KEY,
+          interaction_id TEXT NOT NULL,
+          tx_hash TEXT,
+          chain_id INTEGER,
+          status TEXT NOT NULL,
+          metadata TEXT NOT NULL
+        );
+        CREATE TABLE evidence (
+          id TEXT PRIMARY KEY,
+          interaction_id TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          payload TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
+      `);
+      db.prepare(
+        `INSERT INTO interactions (id, created_at, wallet_address, counterparty, service, protocol, summary)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ).run("graph-1", "2024-01-01T00:00:00Z", "0xabc", "merchant-1", "/pay", "x402", "{}");
+      db.prepare(
+        `INSERT INTO settlements (id, interaction_id, tx_hash, status, metadata)
+         VALUES (?, ?, ?, ?, ?)`,
+      ).run("settlement-1", "graph-1", "0xtx", "confirmed", "{}");
+      db.prepare(
+        `INSERT INTO evidence (id, interaction_id, kind, payload, created_at)
+         VALUES (?, ?, ?, ?, ?)`,
+      ).run("evidence-1", "graph-1", "x402", "{}", "2024-01-01T00:00:00Z");
+
+      const graphStore = {
+        getDatabase: () => db,
+      } as unknown as Store;
+
+      const result1 = cache.getInteractionGraph(graphStore, "graph-1");
+      const result2 = cache.getInteractionGraph(graphStore, "graph-1");
+      const missing = cache.getInteractionGraph(graphStore, "missing");
+
+      expect(result1?.summary.totalInteractions).toBe(1);
+      expect(result2).toEqual(result1);
+      expect(missing).toBeNull();
+
+      const stats = cache.getStats();
+      expect(stats.hits).toBe(1);
+      expect(stats.misses).toBe(2);
+
+      db.close();
+    });
+  });
+
   describe("getInteractionsList", () => {
     it("caches interaction list queries", () => {
       // First call - cache miss
@@ -399,6 +463,54 @@ describe("QueryCache", () => {
       // Flow aggregates and interaction lists should be cleared
       const sizeAfter = cache.getStats().size;
       expect(sizeAfter).toBeLessThan(sizeBefore);
+    });
+
+    it("invalidates cached interaction graphs", () => {
+      const db = new DatabaseSync(":memory:");
+      db.exec(`
+        CREATE TABLE interactions (
+          id TEXT PRIMARY KEY,
+          created_at TEXT NOT NULL,
+          agent_id TEXT,
+          wallet_address TEXT,
+          counterparty TEXT,
+          service TEXT,
+          protocol TEXT,
+          summary TEXT NOT NULL
+        );
+        CREATE TABLE settlements (
+          id TEXT PRIMARY KEY,
+          interaction_id TEXT NOT NULL,
+          tx_hash TEXT,
+          chain_id INTEGER,
+          status TEXT NOT NULL,
+          metadata TEXT NOT NULL
+        );
+        CREATE TABLE evidence (
+          id TEXT PRIMARY KEY,
+          interaction_id TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          payload TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
+      `);
+      db.prepare(
+        `INSERT INTO interactions (id, created_at, wallet_address, counterparty, service, protocol, summary)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ).run("graph-1", "2024-01-01T00:00:00Z", "0xabc", "merchant-1", "/pay", "x402", "{}");
+
+      const graphStore = {
+        getDatabase: () => db,
+      } as unknown as Store;
+
+      cache.getInteractionGraph(graphStore, "graph-1");
+      cache.invalidateOnIngestion(["0xabc"], ["merchant-1"]);
+
+      cache.resetStats();
+      cache.getInteractionGraph(graphStore, "graph-1");
+      expect(cache.getStats().misses).toBe(1);
+
+      db.close();
     });
 
     it("handles multiple wallets and counterparties", () => {

@@ -12,6 +12,7 @@ import {
   formatBehaviorLabel,
   formatAmount,
   formatControlStatus,
+  formatGraphKind,
   formatHttpStatus,
   formatSettlementBadge,
   getFlowServiceLabel,
@@ -165,6 +166,24 @@ function makeBehaviorModel(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function makeGraph(overrides: Record<string, unknown> = {}) {
+  return {
+    interactionId: "i-0",
+    nodes: [],
+    edges: [],
+    paths: [],
+    summary: {
+      totalInteractions: 0,
+      totalEvidence: 0,
+      uniqueWallets: 0,
+      uniqueCounterparties: 0,
+      uniqueServices: 0,
+      settlementRate: 0,
+    },
+    ...overrides,
+  };
+}
+
 describe("AFI UI", () => {
   const fetchMock = global.fetch as unknown as ReturnType<typeof vi.fn>;
 
@@ -198,9 +217,78 @@ describe("AFI UI", () => {
     expect(screen.getByText(/Agent Flow Intelligence/i)).toBeInTheDocument();
   });
 
+  it("renders the relationship drilldown for a selected interaction graph", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse([{ id: "i-graph", created_at: "2024-01-01T00:00:00Z", protocol: "x402" }]));
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        makePacket({
+          interaction: {
+            id: "i-graph",
+            created_at: "2024-01-01T00:00:00Z",
+            wallet_address: "0xwallet",
+            counterparty: "merchant-1",
+            service: "/pay",
+            protocol: "x402",
+          },
+          references: {
+            wallet: { address: "0xwallet", explorerUrl: "https://basescan.org/address/0xwallet" },
+            counterparty: { id: "merchant-1" },
+            service: "/pay",
+          },
+        }),
+      ),
+    );
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeBehaviorModel()));
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        makeGraph({
+          nodes: [
+            { id: "wallet:0xwallet", kind: "wallet", label: "0xwallet", interactionCount: 1, evidenceCount: 2, highlighted: true },
+            { id: "counterparty:merchant-1", kind: "counterparty", label: "merchant-1", interactionCount: 1, evidenceCount: 2, highlighted: true },
+            { id: "service:/pay", kind: "service", label: "/pay", interactionCount: 1, evidenceCount: 2, highlighted: true },
+          ],
+          paths: [
+            {
+              id: "path-1",
+              interactionIds: ["i-graph"],
+              wallet: "0xwallet",
+              counterparty: "merchant-1",
+              service: "/pay",
+              settlement: "0xtx",
+              protocols: ["x402"],
+              settlementStatus: "confirmed",
+              interactionCount: 1,
+              evidenceCount: 2,
+              evidenceKinds: ["receipt", "x402"],
+              highlighted: true,
+            },
+          ],
+          summary: {
+            totalInteractions: 1,
+            totalEvidence: 2,
+            uniqueWallets: 1,
+            uniqueCounterparties: 1,
+            uniqueServices: 1,
+            settlementRate: 1,
+          },
+        }),
+      ),
+    );
+
+    render(<App loadDashboard={false} />);
+    fireEvent.click(await screen.findByRole("button", { name: "View" }));
+
+    expect(await screen.findByText("Relationship Drilldown")).toBeInTheDocument();
+    expect(screen.getByText("Neighborhood interactions").parentElement?.querySelector("strong")).toHaveTextContent("1");
+    expect(screen.getByRole("button", { name: "merchant-1" })).toBeInTheDocument();
+    expect(screen.getByText("0xwallet → merchant-1 → /pay")).toBeInTheDocument();
+    expect(screen.getByText("receipt, x402")).toBeInTheDocument();
+  });
+
   it("covers packet and flow helper branches directly", () => {
     expect(formatBehaviorLabel("anomalous")).toBe("anomalous");
     expect(formatBehaviorCluster("steady_operator")).toBe("steady operator");
+    expect(formatGraphKind("counterparty")).toBe("counterparty");
     const basePacket = makePacket();
     expect(formatAmount(basePacket)).toBe("1 USDC");
     expect(formatAmount(makePacket({ interaction: { id: "usd", created_at: "2024-01-01T00:00:00Z", protocol: "x402", amountUSD: 2.5 } }))).toBe(
@@ -781,6 +869,8 @@ describe("AFI UI", () => {
 
     fetchMock.mockResolvedValueOnce(jsonResponse(interactions));
     fetchMock.mockResolvedValueOnce(jsonResponse(makePacket({ interaction: { ...interactions[0], amountUSD: 1 } })));
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeBehaviorModel()));
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeGraph()));
     fetchMock.mockResolvedValueOnce(jsonResponse(counterpartyMetrics));
 
     render(<App loadDashboard={false} />);
@@ -840,6 +930,8 @@ describe("AFI UI", () => {
         protocolLabel: undefined,
       },
     })));
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeBehaviorModel()));
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeGraph()));
     fetchMock.mockResolvedValueOnce(jsonResponse(makePacket({
       interaction: { id: "i-fallback", created_at: "2024-01-01T00:00:00Z", protocol: "x402", amountUSD: null },
       controls: {
@@ -859,6 +951,8 @@ describe("AFI UI", () => {
         evidenceKinds: [],
       },
     })));
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeBehaviorModel()));
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeGraph()));
     fetchMock.mockResolvedValueOnce(jsonResponse(makePacket({
       interaction: { id: "i-fallback", created_at: "2024-01-01T00:00:00Z", protocol: "x402", amountUSD: null },
       controls: {
@@ -878,6 +972,8 @@ describe("AFI UI", () => {
         evidenceKinds: [],
       },
     })));
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeBehaviorModel()));
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeGraph()));
 
     render(<App loadDashboard={false} />);
 
@@ -905,6 +1001,8 @@ describe("AFI UI", () => {
 
     fetchMock.mockResolvedValueOnce(jsonResponse(interactions));
     fetchMock.mockResolvedValueOnce(jsonResponse(makePacket({ interaction: { id: "i-refresh", created_at: "2024-01-01T00:00:00Z", protocol: "x402" } })));
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeGraph()));
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeBehaviorModel()));
     fetchMock.mockResolvedValueOnce(jsonResponse({ ok: true, refreshed: true, message: "Protocol label refreshed" }));
     fetchMock.mockResolvedValueOnce(
       jsonResponse(
@@ -926,6 +1024,8 @@ describe("AFI UI", () => {
         }),
       ),
     );
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeGraph()));
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeBehaviorModel()));
 
     render(<App loadDashboard={false} />);
 
@@ -942,8 +1042,12 @@ describe("AFI UI", () => {
 
     fetchMock.mockResolvedValueOnce(jsonResponse(interactions));
     fetchMock.mockResolvedValueOnce(jsonResponse(makePacket({ interaction: { id: "i-refresh-default", created_at: "2024-01-01T00:00:00Z", protocol: "x402" } })));
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeGraph()));
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeBehaviorModel()));
     fetchMock.mockResolvedValueOnce(jsonResponse({ ok: true, refreshed: true }));
     fetchMock.mockResolvedValueOnce(jsonResponse(makePacket({ interaction: { id: "i-refresh-default", created_at: "2024-01-01T00:00:00Z", protocol: "x402" } })));
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeGraph()));
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeBehaviorModel()));
 
     render(<App loadDashboard={false} />);
 
@@ -958,6 +1062,8 @@ describe("AFI UI", () => {
 
     fetchMock.mockResolvedValueOnce(jsonResponse(interactions));
     fetchMock.mockResolvedValueOnce(jsonResponse(makePacket({ interaction: { id: "i-refresh-fail", created_at: "2024-01-01T00:00:00Z", protocol: "x402" } })));
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeGraph()));
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeBehaviorModel()));
     fetchMock.mockRejectedValueOnce(new Error("refresh failed"));
 
     render(<App loadDashboard={false} />);
@@ -973,6 +1079,8 @@ describe("AFI UI", () => {
 
     fetchMock.mockResolvedValueOnce(jsonResponse(interactions));
     fetchMock.mockResolvedValueOnce(jsonResponse(makePacket({ interaction: { id: "i-refresh-http", created_at: "2024-01-01T00:00:00Z", protocol: "x402" } })));
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeGraph()));
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeBehaviorModel()));
     fetchMock.mockResolvedValueOnce({ ok: false, json: () => Promise.resolve({}) } as FetchResponse & { ok: boolean });
 
     render(<App loadDashboard={false} />);
@@ -1114,6 +1222,34 @@ describe("AFI UI", () => {
     expect(screen.getByText("bursty explorer")).toBeInTheDocument();
   });
 
+  it("loads the behavior model from a selected packet wallet reference", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse([{ id: "i-wallet-detail", created_at: "2024-01-01T00:00:00Z", protocol: "x402" }]),
+    );
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        makePacket({
+          interaction: { id: "i-wallet-detail", created_at: "2024-01-01T00:00:00Z", protocol: "x402" },
+          references: {
+            wallet: { address: "0xwallet", explorerUrl: "https://basescan.org/address/0xwallet" },
+            counterparty: { id: "svc" },
+            service: "/paid",
+          },
+        }),
+      ),
+    );
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeBehaviorModel({ wallet: "0xwallet" })));
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeGraph()));
+
+    render(<App loadDashboard={false} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "View" }));
+
+    expect(await screen.findByText("Behavior Model")).toBeInTheDocument();
+    expect((await screen.findAllByText("0xwallet")).length).toBeGreaterThan(0);
+    expect(await screen.findByText("elevated")).toBeInTheDocument();
+  });
+
   it("covers interaction/detail fetch failures and packet status fallbacks", async () => {
     fetchMock.mockRejectedValueOnce(new Error("network"));
     const first = render(<App loadDashboard={false} />);
@@ -1130,6 +1266,7 @@ describe("AFI UI", () => {
       correlations: {},
       references: {},
     })));
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeGraph()));
     fetchMock.mockResolvedValueOnce(jsonResponse(makePacket({
       interaction: { id: "i1", created_at: "2024-01-01T00:00:00Z", protocol: "x402" },
       summary: { handshakeStatus: "challenge-only", controlStatus: "unknown", settlementStatus: "unknown", receiptCount: 0, attestationCount: 0, evidenceKinds: [] },
@@ -1138,6 +1275,7 @@ describe("AFI UI", () => {
       correlations: {},
       references: {},
     })));
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeGraph()));
     fetchMock.mockResolvedValueOnce(jsonResponse(makePacket({
       interaction: { id: "i1", created_at: "2024-01-01T00:00:00Z", protocol: "x402" },
       summary: { handshakeStatus: "authorized", controlStatus: "unknown", settlementStatus: "unknown", receiptCount: 0, attestationCount: 0, evidenceKinds: [] },
@@ -1146,6 +1284,7 @@ describe("AFI UI", () => {
       correlations: {},
       references: {},
     })));
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeGraph()));
     fetchMock.mockResolvedValueOnce(jsonResponse(makePacket({
       interaction: { id: "i1", created_at: "2024-01-01T00:00:00Z", protocol: "x402" },
       summary: { handshakeStatus: "settled", controlStatus: "unknown", settlementStatus: "failed", receiptCount: 0, attestationCount: 0, evidenceKinds: [] },
@@ -1154,6 +1293,7 @@ describe("AFI UI", () => {
       correlations: { settlement: { id: "s1", status: "failed" } },
       references: {},
     })));
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeGraph()));
     fetchMock.mockResolvedValueOnce(jsonResponse(makePacket({
       interaction: { id: "i1", created_at: "2024-01-01T00:00:00Z", protocol: "x402" },
       summary: { handshakeStatus: "settled", controlStatus: "unknown", settlementStatus: "recorded", receiptCount: 0, attestationCount: 0, evidenceKinds: [] },
@@ -1162,6 +1302,7 @@ describe("AFI UI", () => {
       correlations: { settlement: { id: "s1", status: "recorded" } },
       references: {},
     })));
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeGraph()));
     fetchMock.mockResolvedValueOnce(jsonResponse(makePacket({
       interaction: { id: "i1", created_at: "2024-01-01T00:00:00Z", protocol: "x402" },
       summary: { handshakeStatus: "not-captured", controlStatus: "unknown", settlementStatus: "unknown", receiptCount: 0, attestationCount: 0, evidenceKinds: [] },
@@ -1170,6 +1311,7 @@ describe("AFI UI", () => {
       correlations: {},
       references: {},
     })));
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeGraph()));
     fetchMock.mockRejectedValueOnce(new Error("detail"));
 
     render(<App loadDashboard={false} />);
